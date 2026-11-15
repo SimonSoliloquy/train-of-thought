@@ -244,8 +244,8 @@
 
 /**
  * A ticket: a route for the player to find and build. There are never more than ECON.maxTickets
- * at once. `to` is always an article the player has NOT built; `from` is either a station the
- * player has, or another article they have not built. The game does not say which links lead
+ * at once. `to` is always an article the player has NOT built; `from` is always a station the
+ * player owns (its passenger waits there). The game does not say which links lead
  * there: working that out is the game. A ticket is met the moment both ends are stations joined
  * by track (every track has a train), and pays its reward in gold at once.
  * @typedef {Object} Ticket
@@ -260,6 +260,8 @@
  * @property {number} time       game seconds left before the ticket is withdrawn (no penalty)
  * @property {number} timeMax
  * @property {number} surveyCost   gold a surveyor costs for this ticket right now
+ * @property {{from: string, to: string, left: number, total: number}|null} surveying   a surveyor is at work at
+ *                               station `from`; `left` seconds until they report (ECON.surveyorSeconds)
  * @property {{from: string, to: string}|null} hint   what a bought surveyor found: build `to` next, from your
  *                               station `from`. Cleared once `to` is built (another surveyor can then be bought).
  */
@@ -352,8 +354,10 @@
  *   the station it last stopped at). typeId may be omitted when there is only one option.
  *   The new train starts running at once: there is nothing else to press.
  * @property {(ticketId: number) => Promise<Result & {hint?: {from: string, to: string}}>} buySurveyor
- *   Pays Ticket.surveyCost and sets Ticket.hint: the next article to build towards that ticket's destination
- *   and the station to build it from (made priceable at once). One step per purchase.
+ *   Pays Ticket.surveyCost and sends a surveyor to work (Ticket.surveying). When they finish, Ticket.hint is
+ *   set: the next article to build towards that ticket's destination and the station to build it from, and
+ *   only then does that signpost turn gold. One step per purchase. Nothing else marks where a ticket leads:
+ *   the player finds the way by reading the articles.
  * @property {(a: string, b: string) => Track|null} trackBetween   in either direction
  */
 
@@ -384,8 +388,8 @@
  *   - every amount as gold, never dollars: "326 gold", "+140 gold";
  *   - on each link signpost: the price to build there (game.quoteBuild) and, when passengers are
  *     waiting to go there, how many and what they will pay; such signposts stand out.
- *     A signpost that is a ticket's destination, or a ticket's unbuilt starting point, stands out most
- *     and says so ("Ticket · +650 gold", "Ticket start").
+ *     Signposts do NOT give away where tickets lead. The only gold signpost is one a paid surveyor has
+ *     finished pointing at (Ticket.hint.to, shown at the station Ticket.hint.from): "Surveyor: build here next".
  * @typedef {Object} Renderer
  * @property {(dt: number) => void} update          real seconds
  * @property {(handler: (pick: Pick) => void) => () => void} onPick   click (not drag) on the 3D view

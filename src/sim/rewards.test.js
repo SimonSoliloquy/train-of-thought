@@ -774,9 +774,20 @@ test('surveyor: for a fee, shows the next article to build towards a ticket, one
 
   const r1 = await game.buySurveyor(t.id);
   assert.equal(r1.ok, true);
-  assert.deepEqual(r1.hint, { from: 'N0', to: 'N0.1' });
-  assert.deepEqual(t.hint, { from: 'N0', to: 'N0.1' });
+  // the surveyor works for a while first; nothing is revealed yet
+  assert.equal(t.hint, null);
+  assert.deepEqual({ from: t.surveying.from, to: t.surveying.to }, { from: 'N0', to: 'N0.1' });
+  assert.equal(t.surveying.left, ECON.surveyorSeconds);
   assert.equal(game.state.money, 1000 - t.surveyCost);
+  assert.equal(hints.filter(Boolean).length, 0);
+  // they finish on their own clock, even though the game's clock has not started (nothing is built)
+  for (let i = 0; i < ECON.surveyorSeconds * 10 - 5; i++) game.update(0.1);
+  assert.equal(t.hint, null);
+  for (let i = 0; i < 10; i++) game.update(0.1);
+  assert.equal(game.state.time, 0);
+  assert.equal(t.surveying, null);
+  assert.deepEqual(t.hint, { from: 'N0', to: 'N0.1' });
+  assert.deepEqual(hints.at(-1), { from: 'N0', to: 'N0.1' });
   assert.ok(world.placements.has('N0.1'), 'the hinted article can be priced');
   assert.equal(game.quoteBuild('N0', 'N0.1').ok, true);
 
@@ -790,7 +801,9 @@ test('surveyor: for a fee, shows the next article to build towards a ticket, one
   assert.equal(t.hint, null);
   assert.equal(hints.at(-1), null);
   const r2 = await game.buySurveyor(t.id);
-  assert.deepEqual(r2.hint, { from: 'N0.1', to: 'N0.1.2' });
+  assert.deepEqual({ from: r2.surveying.from, to: r2.surveying.to }, { from: 'N0.1', to: 'N0.1.2' });
+  for (let i = 0; i < ECON.surveyorSeconds * 10 + 5; i++) game.update(0.1);
+  assert.deepEqual(t.hint, { from: 'N0.1', to: 'N0.1.2' });
 
   // not enough gold, an unknown ticket, and a ticket with no recorded route are refused without charge
   game.state.money = 1;

@@ -69,8 +69,9 @@ export const ECON = {
   ticketMaxLinks: 4,
   ticketSecondsBase: 420,           // time before a ticket is withdrawn
   ticketSecondsPerLink: 240,
-surveyorCost: 60,                 // gold (times inflation) for a surveyor to show the next article towards a ticket
-    ticketGapSeconds: 20,              // pause before a new ticket replaces one that is gone
+  surveyorCost: 250,                 // gold (times inflation) for a surveyor to show the next article towards a ticket
+  surveyorSeconds: 60,              // how long a surveyor works before revealing what they found
+  ticketGapSeconds: 20,              // pause before a new ticket replaces one that is gone
   paydaySeconds: 10,                // money arrives in one lump this often
   bankruptcyGraceSeconds: 45,
   dwellSeconds: 3,

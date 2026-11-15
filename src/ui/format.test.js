@@ -160,7 +160,7 @@ test('buildOffer: label, one short sub line, affordability', () => {
   const q = { style: 'cheap', trackCost: 204, stationCost: 122, total: 326, route: { hexes: kinds.map((kind, i) => ({ q: i, r: 0, kind })) } };
   const base = { title: 'Maglev', quote: q, money: 1000, inflight: false, ticket: null };
   assert.deepEqual(f.buildOffer(base), { title: 'Maglev', label: 'Build \u00b7 326 gold', sub: 'track 204 \u00b7 station 122 \u00b7 1 bridge', affordable: true });
-  assert.equal(f.buildOffer({ ...base, ticket: { reward: 650.4 } }).sub, 'Ticket \u00b7 +650 gold');
+  assert.ok(!/ticket/i.test(f.buildOffer({ ...base, ticket: { reward: 650.4 } }).sub), 'the offer does not give a ticket away');
   const poor = f.buildOffer({ ...base, money: 206, ticket: { reward: 650 } });
   assert.equal(poor.sub, '120 more gold needed');
   assert.equal(poor.affordable, false);

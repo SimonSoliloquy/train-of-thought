@@ -32,7 +32,7 @@ export function createTickets(ctx) {
         .catch((err) => ({ ok: false, reason: (err && err.message) || 'The surveyor could not be hired.' }))
         .then((res) => {
           r.busy = false;
-          if (ctx.report(res) && res.hint) follow(res.hint);
+          ctx.report(res); // the surveyor now works for a while; the row shows their progress
           paint(r);
         });
     });
@@ -64,9 +64,12 @@ export function createTickets(ctx) {
       r.refs.fill._tone = v.tone;
     }
     const h2 = r.t.hint;
-    r.refs.hint.hidden = !h2;
+    const sv = r.t.surveying;
+    r.refs.hint.hidden = !h2 && !sv;
     if (h2) setText(r.refs.hint, `Surveyor: build ${h2.to} next, from ${h2.from}`);
-    r.refs.survey.hidden = !!h2 || r.leaving;
+    else if (sv) setText(r.refs.hint, `Surveyor at work in ${sv.from}\u2026 ${Math.ceil(sv.left)}s`);
+    setClass(r.refs.hint, 'working', !h2 && !!sv);
+    r.refs.survey.hidden = !!h2 || !!sv || r.leaving;
     const cost = Math.round(r.t.surveyCost || 0);
     setText(r.refs.survey, r.busy ? 'Surveying\u2026' : `Surveyor \u00b7 ${cost.toLocaleString('en-US')} gold`);
     setClass(r.refs.survey, 'poor', !r.busy && state.money < cost);

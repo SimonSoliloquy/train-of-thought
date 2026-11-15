@@ -707,17 +707,16 @@ test('gold: every amount reads as gold, never dollars', async () => {
   assert.equal(`Add train · ${gold(120)}`, 'Add train · 120 gold');
 });
 
-test('tickets: a destination reads "Ticket · +N gold", an unbuilt start "Ticket start"', async () => {
+test('signposts do not give away where tickets lead', async () => {
   const { ticketBadge } = await import('./format.js');
   const tickets = [
     { id: 1, from: 'A', to: 'B', reward: 650 },
     { id: 2, from: 'C', to: 'B', reward: 700 },
-    { id: 3, from: 'B', to: 'D', reward: 100 },
+    { id: 3, from: 'B', to: 'D', reward: 100, surveying: { from: 'B', to: 'X', left: 5, total: 12 } },
   ];
-  assert.deepEqual(ticketBadge('B', tickets), { kind: 'to', reward: 700, text: 'Ticket · +700 gold' });
-  assert.equal(ticketBadge('C', tickets).text, 'Ticket start');
-  assert.equal(ticketBadge('D', tickets).kind, 'to');
-  assert.equal(ticketBadge('Z', tickets), null);
+  assert.equal(ticketBadge('B', tickets), null, 'a destination is not marked');
+  assert.equal(ticketBadge('C', tickets), null, 'an unbuilt start is not marked');
+  assert.equal(ticketBadge('X', tickets), null, 'a surveyor still at work has revealed nothing');
   assert.equal(ticketBadge('B', undefined), null);
 });
 
@@ -1001,6 +1000,6 @@ test('a signpost the surveyor pointed at says so', async () => {
   const { ticketBadge } = await import('./format.js');
   const tickets = [{ id: 1, from: 'A', to: 'Far', reward: 900, hint: { from: 'A', to: 'Step' } }];
   assert.deepEqual(ticketBadge('Step', tickets), { kind: 'hint', text: 'Surveyor: build here next' });
-  assert.equal(ticketBadge('Far', tickets).kind, 'to');
+  assert.equal(ticketBadge('Far', tickets), null, 'the destination itself stays unmarked');
   assert.equal(ticketBadge('Other', tickets), null);
 });

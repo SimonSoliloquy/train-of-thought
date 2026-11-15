@@ -525,7 +525,7 @@ export class StationsView {
         const want = !!(info && info.waiting > 0) || !!tk;
         g.want = want;
         const p = Math.min(1, Math.max(0, (this.time - g.born) / 0.35));
-        const k2 = Math.max(0.001, easeOutBack(p)) * (hov ? 1.15 : tk && tk.kind === 'to' ? 1.2 : want ? 1.08 : 1);
+        const k2 = Math.max(0.001, easeOutBack(p)) * (hov ? 1.15 : tk ? 1.2 : want ? 1.08 : 1);
         // wanted signposts hop gently and shine
         const bob = want ? Math.abs(Math.sin(this.time * 3.2 + k * 0.7)) * 0.07 : 0;
         g.mesh.position.set(g.x, g.y + bob, g.z);

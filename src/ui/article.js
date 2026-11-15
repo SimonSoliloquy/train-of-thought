@@ -3,7 +3,8 @@
 // Esc, a click on empty map, or when the game moves on to another station. Closing it leaves the
 // station selected, so its signposts stay. The article is the game board:
 // every link in it to another article can be clicked to price a build towards that article,
-// exactly as a signpost can. Stations you already have and ticket ends are marked in the text.
+// exactly as a signpost can. Stations you already have are marked in the text, and a ticket's
+// destination is gold wherever it appears (one stop away), as is a surveyor's finished pick.
 import { h, clear, setText } from './dom.js';
 import { sanitizeArticle } from './sanitize.js';
 
@@ -60,8 +61,14 @@ export function createArticle(ctx, wiki) {
   /** Mark links that are already stations, and the ends of tickets. */
   function mark() {
     if (!station) return;
+    // Reading is how the way is found. A ticket's destination shows in gold where it appears in
+    // the text (it is then one stop away: the reward for finding the right article), and so does
+    // what a paid surveyor has finished pointing at from this very station. Nothing else is marked.
     const ends = new Set();
-    for (const t of state.tickets || []) { ends.add(t.to); if (!state.stations.has(t.from)) ends.add(t.from); }
+    for (const t of state.tickets || []) {
+      ends.add(t.to);
+      if (t.hint && t.hint.from === station) ends.add(t.hint.to);
+    }
     for (const a of body.querySelectorAll('a.tot-wl')) {
       const t = a.dataset.title;
       a.classList.toggle('built', state.stations.has(t));

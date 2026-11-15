@@ -245,13 +245,14 @@ export function needMoreText(total, money) {
 
 /**
  * The offer floated over the place being built towards (renderer.setBuildOffer).
- * ticket: the ticket whose destination this is, if any.
  */
 export function buildOffer({ title, quote, money, inflight, ticket }) {
   const short = !inflight && quote.total > money;
   let sub;
+  // The offer never says whether this place is a ticket's destination: pricing every signpost
+  // would otherwise find it without reading a word.
+  void ticket;
   if (short) sub = needMoreText(quote.total, money);
-  else if (ticket) sub = `Ticket \u00b7 ${fmtSigned(ticket.reward)}`;
   else sub = quoteLine(summarizeQuote(quote));
   return {
     title,

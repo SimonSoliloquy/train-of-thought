@@ -854,7 +854,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
   function addTicket(from, to, fromDescription, toDescription, links, path = null) {
     const base = (ECON.ticketBase + ECON.ticketPerLink * links) * state.inflation;
     const timeMax = ECON.ticketSecondsBase + ECON.ticketSecondsPerLink * links;
-    const t = { id: nextTicketId++, from, to, fromDescription, toDescription, links, reward: Math.round(base), time: timeMax, timeMax, surveyCost: surveyorCost(), hint: null };
+    const t = { id: nextTicketId++, from, to, fromDescription, toDescription, links, reward: Math.round(base), time: timeMax, timeMax, surveyCost: surveyorCost(), surveying: null, hint: null };
     ticketBase.set(t.id, base);
     if (Array.isArray(path) && path.length >= 2) ticketPaths.set(t.id, path.slice());
     state.tickets.push(t);
@@ -878,7 +878,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
 
   /**
    * Draws one ticket. Its destination is always unbuilt, some links out from the network; its
-   * start is a built station or, sometimes, an unbuilt page one link out. Tickets reach further
+   * start is always a station the player owns. Tickets reach further
    * as more are issued, so the game becomes about finding the chain of links.
    */
   async function drawTicket() {
@@ -891,7 +891,8 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
         if (!built.length) return;
         const taken = new Set(state.tickets.flatMap((t) => [t.from, t.to]));
         const anchor = built[Math.floor(r() * built.length)];
-        const bothNew = state.stations.size >= 2 && k >= 2 && r() < 0.3;
+        // A ticket always starts from a station the player owns: its passenger is waiting there.
+        const bothNew = false;
         const visited = new Set([anchor.title]);
         const path = [anchor.title];
         let from = anchor.title;
@@ -943,6 +944,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     const t = state.tickets.find((x) => x.id === ticketId);
     if (!t) return fail('That ticket is gone.');
     if (t.hint) return { ok: true, hint: t.hint };
+    if (t.surveying) return { ok: true, surveying: t.surveying };
     const path = ticketPaths.get(t.id);
     if (!path) return fail('The surveyor has no map for this ticket.');
     let i = -1;
@@ -966,14 +968,27 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
       }
     }
     if (!state.tickets.includes(t)) { state.money += cost; return fail('That ticket is gone.'); }
-    t.hint = { from, to };
-    emit('ticketHint', { ticket: t, hint: t.hint });
-    return { ok: true, hint: t.hint };
+    // The surveyor goes to work at that station; what they find is revealed when they finish.
+    t.surveying = { from, to, left: ECON.surveyorSeconds, total: ECON.surveyorSeconds };
+    emit('ticketHint', { ticket: t, hint: null });
+    return { ok: true, surveying: t.surveying };
   }
 
   function tickTickets(h, frozen = false) {
     const cost = surveyorCost();
-    for (const t of state.tickets) t.surveyCost = cost;
+    for (const t of state.tickets) {
+      t.surveyCost = cost;
+      // A surveyor at work finishes on their own clock, even before the game's clock has started.
+      const sv = t.surveying;
+      if (!sv) continue;
+      if (state.stations.has(sv.to)) { t.surveying = null; continue; } // built meanwhile: nothing left to find
+      sv.left = Math.max(0, sv.left - h);
+      if (sv.left <= 0) {
+        t.surveying = null;
+        t.hint = { from: sv.from, to: sv.to };
+        emit('ticketHint', { ticket: t, hint: t.hint });
+      }
+    }
     for (const t of frozen ? [] : [...state.tickets]) {
       t.time = Math.max(0, t.time - h);
       t.reward = Math.round(liveFare(ticketBase.get(t.id), t.time, t.timeMax));

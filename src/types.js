@@ -90,7 +90,15 @@
  * @property {string} from
  * @property {string} to
  * @property {'cheap'|'direct'} style
- * @property {{q:number, r:number, kind:'ground'|'ledge'|'bridge'|'tunnel'}[]} hexes  from -> to, inclusive of both station hexes
+ * @property {{q:number, r:number, kind:'ground'|'ledge'|'bridge'|'tunnel', lane?: number, over?: boolean, under?: boolean}[]} hexes
+ *   from -> to, inclusive of both station hexes. Tracks never lie on top of one another:
+ *   - `lane` (absent or 0 = the hex's own centreline): this track runs ALONGSIDE track that was already
+ *     there, as the next parallel track of a shared corridor. +n / -n is the n-th track to the right /
+ *     left of the first track's centreline, WORLD.laneSpacing apart. A route joins a corridor, runs
+ *     beside the other track, and splits off again (combine and split); `points` already carry the offset.
+ *   - `over`: here the track crosses ABOVE another track on a short bridge (kind 'bridge'), with at least
+ *     WORLD.crossingClearance of height between the two rails. `under`: it crosses BELOW another track.
+ *   Two tracks only ever share a centreline inside a station hex.
  * @property {RoutePoint[]} points  dense, already-smoothed centreline polyline from -> to (about 8 points per hex).
  *                                  Everyone positions things on it with sampleRoute() from src/route.js.
  * @property {number} length        world-unit length of `points`
@@ -119,6 +127,8 @@
  *   cheap = lowest construction cost (winds round water and high ground);
  *   direct = shortest, bridging and tunnelling as needed. `same` when both are the same path.
  *   Routes never pass through a third station's hex. Throws if either title is not placed.
+ *   A route may run alongside existing track (a parallel lane, cheaper: WORLD.laneCostFactor of the
+ *   hex price) and must cross existing track at a different height (over or under), never at grade.
  * @property {(route: Route) => {revealed: Tile[]}} commitRoute   Records the track; reveals WORLD.revealTrack along it.
  * @property {(q: number, r: number) => Tile} terrainAt           Any hex, revealed or not.
  * @property {(q: number, r: number) => boolean} isRevealed
@@ -344,6 +354,8 @@
  *
  * The renderer subscribes to game events itself and reads game.state every frame.
  * It draws, without being asked:
+ *   - tracks that share a corridor side by side (Route hexes with `lane`) and crossings where one track
+ *     bridges over another (`over` / `under`): a clear span with no pier standing on the lower track;
  *   - an upgrade tag floating over every track that can still be upgraded (from game.quoteUpgrade):
  *     the train's name and price, bright when affordable and dim when not, two tags side by side
  *     when there is a choice; tracks with an affordable upgrade are highlighted;

@@ -312,6 +312,27 @@ function coachBullet() {
   return { paint, trim };
 }
 
+/**
+ * Carriages are drawn this much narrower than modelled so two trains in neighbouring lanes
+ * (WORLD.laneSpacing apart) pass with daylight between them. Same for every train type.
+ */
+export const TRAIN_SCALE_X = 0.86;
+
+/** Full drawn width of the widest vehicle of a train type (what it needs of a lane). */
+export function trainWidth(typeId) {
+  typeId = drawableType(typeId);
+  let w = 0;
+  const kinds = [['loco', 0], ['car', 0], ['car', 1], ['car', 2], ['car', 3]];
+  for (const [kind, index] of kinds) {
+    const b = vehicleBuilders(typeId, kind, index);
+    for (const m of [b.paint, b.trim]) {
+      const pos = m.pos;
+      for (let i = 0; i < pos.length; i += 3) w = Math.max(w, Math.abs(pos[i]) * 2);
+    }
+  }
+  return w * TRAIN_SCALE_X;
+}
+
 /** Builders per (type, vehicle). Exported for tests. */
 export function vehicleBuilders(typeId, kind, index) {
   typeId = drawableType(typeId);
@@ -439,7 +460,7 @@ export class TrainsView {
         if (!Number.isFinite(p.x)) continue;
         v.obj.position.set(p.x, p.y, p.z);
         v.obj.rotation.set(-Math.asin(Math.max(-1, Math.min(1, p.dy))), Math.atan2(p.dx, p.dz), 0);
-        v.obj.scale.setScalar(k);
+        v.obj.scale.set(k * TRAIN_SCALE_X, k, k);
         v.pos.x = p.x; v.pos.y = p.y; v.pos.z = p.z;
       }
       const h = places[0];

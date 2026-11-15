@@ -2,8 +2,9 @@
 // Pure logic: no three.js, no DOM, no network, no Math.random, no Date.
 
 import { WORLD } from '../config.js';
-import { hexSpiral, hashString } from '../hex.js';
-import { createTerrain, tileKey } from './terrain.js';
+import { HEX_DIRS, hexSpiral, hashString } from '../hex.js';
+import { createTerrain, tileKey, ELEV_STEP } from './terrain.js';
+import { createTrackStore } from './tracks.js';
 import { createLayout } from './layout.js';
 import { createRouter } from './router.js';
 
@@ -22,8 +23,11 @@ export function createWorld({ seed } = {}) {
   const terrain = createTerrain(seedToInt(seed));
   const trackHexes = new Map(); // tileKey -> number of committed routes over the hex
   const layout = createLayout(terrain, (q, r) => trackHexes.has(tileKey(q, r)));
+  // Built track, hex by hex (base track, lanes beside it, the track crossing it): see tracks.js.
+  const store = createTrackStore();
   // Only built stations block track; unbuilt reservations are invisible and move off new track.
-  const router = createRouter(terrain, layout.builtAt, trackHexes);
+  const router = createRouter(terrain, layout.builtAt, store);
+  const committed = new WeakSet();
   const revealed = new Map(); // tileKey -> Tile, in reveal order
 
   function reveal(q, r, radius, out) {
@@ -35,6 +39,29 @@ export function createWorld({ seed } = {}) {
       out.push(t);
     }
     return out;
+  }
+
+  /**
+   * Records a route in the track store. A route priced before other track was laid where it runs
+   * (the sim builds after an article loads) is recorded as far as it is still legal; the hexes
+   * taken meanwhile are left to the track that got there first.
+   */
+  function recordTrack(route) {
+    const plan = router.planOf(route);
+    store.commit(plan ? plan.steps : stepsOf(route), route.points);
+  }
+
+  /** Steps for a route this world did not make (no search plan): its hexes as plain track. */
+  function stepsOf(route) {
+    const hx = route.hexes, n = hx.length;
+    const dirTo = (a, b) => HEX_DIRS.findIndex((d) => a.q + d.q === b.q && a.r + d.r === b.r);
+    return hx.map((h, i) => ({
+      q: h.q, r: h.r, kind: h.kind,
+      level: Math.round((route.points[Math.min(route.points.length - 1, i * 8)]?.y ?? 0) / ELEV_STEP),
+      mode: i === 0 || i === n - 1 ? 'station' : h.lane ? 'lane' : h.over || h.under ? 'cross' : 'free',
+      lane: h.lane || 0, over: !!h.over, under: !!h.under,
+      hin: i > 0 ? dirTo(hx[i - 1], h) : -1, hout: i + 1 < n ? dirTo(h, hx[i + 1]) : -1,
+    }));
   }
 
   function mustGet(title, fn) {
@@ -77,6 +104,12 @@ export function createWorld({ seed } = {}) {
     commitRoute(route) {
       if (!route || !Array.isArray(route.hexes)) throw new Error('world.commitRoute: not a route');
       const out = [];
+      if (committed.has(route)) { // the same track again: nothing new to record
+        for (const h of route.hexes) reveal(h.q, h.r, WORLD.revealTrack, out);
+        return { revealed: out };
+      }
+      committed.add(route);
+      recordTrack(route);
       for (const h of route.hexes) {
         const k = tileKey(h.q, h.r);
         trackHexes.set(k, (trackHexes.get(k) || 0) + 1);

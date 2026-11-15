@@ -4,14 +4,21 @@
 // affordable, dim when not. The quotes come from game.quoteUpgrade. While the goal is to put
 // the first train on a track, that track's tag pulses under a bouncing arrow.
 import { sampleRoute } from './rail.js';
+import { tagParameter } from './lanes.js';
 import { gold } from './format.js';
 
 export const TAG_REQUERY = 0.5; // seconds between quote refreshes
 export const TAG_LIFT = 0.55;   // tag sits this far above the rail (or the hill over a tunnel)
 
-/** Where a track's tag floats: over the middle of the route, above any hill there. Pure. */
-export function tagAnchor(route, groundAt) {
-  const p = sampleRoute(route, 0.5);
+/**
+ * Where a track's tag floats: over the middle of the route, above any hill there. Pure.
+ * With opts.network (lanes.js) and opts.id it moves along the route to a stretch where the track runs
+ * alone (or as far from other tracks as it gets), and away from opts.taken (anchors of other tags), so
+ * tags of tracks in one corridor never sit on top of each other.
+ */
+export function tagAnchor(route, groundAt, opts = {}) {
+  const t = opts.network ? tagParameter(route.points, opts.network, opts.id, opts.taken || []) : 0.5;
+  const p = sampleRoute(route, t);
   let top = p.y;
   if (typeof groundAt === 'function') {
     const g = groundAt(p.x, p.z);
@@ -56,7 +63,8 @@ export function tagChoices(level, options) {
 export const FIRST_TRAIN_GOAL = 'first-train';
 
 export class UpgradeTags {
-  constructor({ game, labels, groundAt, onClick }) {
+  constructor({ game, labels, groundAt, onClick, network }) {
+    this.network = network || null; // lanes.js Network of built tracks (tracks-view.js owns it)
     this.game = game;
     this.labels = labels;
     this.groundAt = groundAt;
@@ -85,8 +93,11 @@ export class UpgradeTags {
       if (!options.length) continue;
       seen.add(tr.id);
       let tag = this.tags.get(tr.id);
-      if (!tag || tag.route !== tr.route) {
-        tag = { trackId: tr.id, route: tr.route, ...tagAnchor(tr.route, this.groundAt) };
+      const ver = this.network ? this.network.version : 0;
+      if (!tag || tag.route !== tr.route || tag.ver !== ver) {
+        const taken = [];
+        for (const o of this.tags.values()) if (o.trackId !== tr.id) taken.push(o);
+        tag = { trackId: tr.id, route: tr.route, ver, ...tagAnchor(tr.route, this.groundAt, { network: this.network, id: tr.id, taken }) };
         this.tags.set(tr.id, tag);
       }
       tag.level = Number.isFinite(tr.level) ? tr.level : null;

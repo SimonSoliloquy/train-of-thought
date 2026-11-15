@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { buildTrack, buildRibbon, vertexCountAt, resample, gradeSegments } from './track.js';
 import { sampleRoute } from './rail.js';
+import { Network } from './lanes.js';
 
 export class TracksView {
   constructor({ parent, materials, terrain, fx }) {
@@ -24,10 +25,26 @@ export class TracksView {
     this.groundAt = (x, z) => terrain.groundAt(x, z);
     this.naturalAt = (x, z) => (terrain.naturalAt ? terrain.naturalAt(x, z) : terrain.groundAt(x, z));
     this.dirty = new Set(); // track ids whose geometry must follow a changed surface
+    this.network = new Network(); // every drawn track's centreline: lanes, crossings
   }
 
-  _geometry(route) {
-    return buildTrack(route, { groundAt: this.groundAt, naturalAt: this.naturalAt });
+  _geometry(route, id) {
+    return buildTrack(route, { groundAt: this.groundAt, naturalAt: this.naturalAt, network: this.network, id });
+  }
+
+  _grade(rec) {
+    if (this.terrain.setTrackGrade) this.terrain.setTrackGrade(rec.id, gradeSegments(rec.track.route, this.naturalAt, { network: this.network, id: rec.id }));
+  }
+
+  /** Tracks near box (other than skip) must follow a track that was added or removed there: regrade and refit them. */
+  _neighboursChanged(box, skip) {
+    for (const rec of this.tracks.values()) {
+      if (rec.id === skip) continue;
+      const b = rec.box;
+      if (b.maxX < box.minX || b.minX > box.maxX || b.maxZ < box.minZ || b.minZ > box.maxZ) continue;
+      this._grade(rec);
+      this.dirty.add(rec.id);
+    }
   }
 
   /** The land changed inside box: refit piers, walls and portals of the tracks there. */
@@ -40,7 +57,7 @@ export class TracksView {
   }
 
   _refit(rec) {
-    const built = this._geometry(rec.track.route);
+    const built = this._geometry(rec.track.route, rec.id);
     rec.mesh.geometry.dispose();
     rec.mesh.geometry = built.builder.toGeometry();
     rec.marks = built.marks;
@@ -65,8 +82,9 @@ export class TracksView {
   add(track, animate) {
     if (!track || track.id == null || this.tracks.has(track.id) || !track.route || !Array.isArray(track.route.points) || track.route.points.length < 2) return;
     // grade the land under the line first, so piers and walls meet the final surface
-    if (this.terrain.setTrackGrade) this.terrain.setTrackGrade(track.id, gradeSegments(track.route, this.naturalAt));
-    const built = this._geometry(track.route);
+    this.network.set(track.id, track.route);
+    if (this.terrain.setTrackGrade) this.terrain.setTrackGrade(track.id, gradeSegments(track.route, this.naturalAt, { network: this.network, id: track.id }));
+    const built = this._geometry(track.route, track.id);
     const geom = built.builder.toGeometry();
     const mesh = new THREE.Mesh(geom, this.materials.track);
     mesh.castShadow = true;
@@ -85,16 +103,19 @@ export class TracksView {
     const circles = [];
     for (const p of resample(track.route, 0.22)) if (p.kind !== 'tunnel') circles.push({ x: p.x, z: p.z, r: 0.45 });
     this.terrain.block(circles);
+    this._neighboursChanged(box, track.id);
   }
 
   remove(id) {
     const rec = this.tracks.get(id);
     if (!rec) return;
+    this.network.delete(id);
     this.group.remove(rec.mesh);
     rec.mesh.geometry.dispose();
     this.tracks.delete(id);
     this._dropGlow(id);
     if (this.terrain.setTrackGrade) this.terrain.setTrackGrade(id, null);
+    this._neighboursChanged(rec.box, id);
   }
 
   /** Reconcile with game.state.tracks. */

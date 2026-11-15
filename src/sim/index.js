@@ -345,19 +345,17 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
       // The article took a moment to load, and an unbuilt spot may have moved meanwhile (another
       // build finishing can pull it towards its other linkers). Lay the track to where the
       // station really is now, never to where it was when priced: same price, fresh route.
-      let route = quote.route;
-      const end = route.hexes[route.hexes.length - 1];
-      const first = route.hexes[0];
-      const pTo = world.placements.get(toTitle);
-      const pFrom = world.placements.get(fromTitle);
-      if (!pTo || !pFrom || pTo.q !== end.q || pTo.r !== end.r || pFrom.q !== first.q || pFrom.r !== first.r) {
-        try {
-          const fresh = world.findRoutes(fromTitle, toTitle);
-          route = fresh[style] || fresh.cheap;
-        } catch {
-          state.money += quote.total;
-          return fail(`Could not find a way to ${toTitle}. Nothing was charged.`);
-        }
+      // The article took a moment to load. Meanwhile an unbuilt spot may have moved, or another
+      // build may have laid track across this route. Find the way again now, so the track goes to
+      // where the station really is and never lies on top of track that was not there when priced.
+      // The price already charged stands.
+      let route;
+      try {
+        const fresh = world.findRoutes(fromTitle, toTitle);
+        route = fresh[style] || fresh.cheap;
+      } catch {
+        state.money += quote.total;
+        return fail(`Could not find a way to ${toTitle}. Nothing was charged.`);
       }
 
       const revealed = [];

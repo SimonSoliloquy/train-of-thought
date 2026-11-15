@@ -95,6 +95,10 @@ function dedupe(path) {
 /**
  * Build a Route along the given hex path (inclusive of both ends).
  * Kinds: water -> bridge; high mountain between low ends -> tunnel; steep sides -> ledge.
+ * Path items may also carry what the real router produces for tracks that share space:
+ *   lane  (+n right / -n left of the first track's centreline: the points are offset sideways by
+ *          WORLD.laneSpacing * lane, eased between hexes), over / under (crossing flags),
+ *   kind  (force a kind, e.g. 'bridge' for a flyover), dy (raise the rail here, for ramps and flyovers).
  */
 export function makeRoute(from, to, path, terrainAt, style = 'direct') {
   const tiles = path.map((h) => terrainAt(h.q, h.r));
@@ -115,15 +119,21 @@ export function makeRoute(from, to, path, terrainAt, style = 'direct') {
         if (hi - lo >= 1.0 && t.elevation - lo >= 0.5) kind = 'ledge';
       }
     }
-    return { q: h.q, r: h.r, kind };
+    if (h.kind && i > 0 && i < path.length - 1) kind = h.kind;
+    const out = { q: h.q, r: h.r, kind };
+    if (h.lane) out.lane = h.lane;
+    if (h.over) out.over = true;
+    if (h.under) out.under = true;
+    return out;
   });
+  const waterBridge = hexes.map((h, i) => h.kind === 'bridge' && tiles[i].water);
   // base rail heights per hex
   const RAIL = 0.1;
   const ys = tiles.map((t) => t.elevation + RAIL);
   // bridges: level deck over the water at the higher bank + clearance
   for (let i = 0; i < hexes.length; i++) {
-    if (hexes[i].kind !== 'bridge') continue;
-    let j = i; while (j < hexes.length && hexes[j].kind === 'bridge') j++;
+    if (!waterBridge[i]) continue;
+    let j = i; while (j < hexes.length && waterBridge[j]) j++;
     const bank = Math.max(ys[i - 1] ?? ys[i], ys[j] ?? ys[i]);
     for (let k = i; k < j; k++) ys[k] = bank + 0.25;
     i = j - 1;
@@ -136,6 +146,9 @@ export function makeRoute(from, to, path, terrainAt, style = 'direct') {
     for (let k = i; k < j; k++) ys[k] = a + (b - a) * ((k - i + 1) / (j - i + 1));
     i = j - 1;
   }
+  // flyover ramps and approaches
+  path.forEach((h, i) => { if (h.dy) ys[i] += h.dy; });
+  const lanes = path.map((h) => h.lane || 0);
   // centreline through hex centres, then Chaikin smoothing carrying (y, u)
   let pts = path.map((h, i) => { const w = hexToWorld(h.q, h.r); return { x: w.x, y: ys[i], z: w.z, u: i }; });
   for (let it = 0; it < 3; it++) {
@@ -147,6 +160,21 @@ export function makeRoute(from, to, path, terrainAt, style = 'direct') {
     }
     next.push(pts[pts.length - 1]);
     pts = next;
+  }
+  // lanes: slide the line sideways (to the right of travel for +n), eased between hex centres
+  if (lanes.some((l) => l)) {
+    const laneAt = (u) => {
+      const i0 = Math.max(0, Math.min(lanes.length - 1, Math.floor(u)));
+      const i1 = Math.min(lanes.length - 1, i0 + 1);
+      const f = Math.max(0, Math.min(1, u - i0)), w = f * f * (3 - 2 * f);
+      return lanes[i0] * (1 - w) + lanes[i1] * w;
+    };
+    pts = pts.map((p, i) => {
+      const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
+      const tx = b.x - a.x, tz = b.z - a.z, l = Math.hypot(tx, tz) || 1;
+      const o = WORLD.laneSpacing * laneAt(p.u);
+      return { ...p, x: p.x - (tz / l) * o, z: p.z + (tx / l) * o };
+    });
   }
   // resample to ~8 points per hex
   const cum = [0];
@@ -196,12 +224,26 @@ export const MOCK_GHOSTS = [
 
 export const MOCK_TRACKS = [
   ['Locomotive', 'Iron Bridge'],
-  ['Locomotive', 'Simplon Tunnel'],
-  ['Locomotive', 'Grand Canyon'],
+  ['Locomotive', 'Grand Canyon'],      // the trunk
+  ['Locomotive', 'Simplon Tunnel'],    // runs beside the trunk on its left, then splits north
   ['Grand Canyon', 'Sahara'],
   ['Iron Bridge', 'Amazon rainforest'],
   ['Locomotive', 'Black Forest'],
+  ['Iron Bridge', 'Grand Canyon'],     // joins the trunk from the right and runs beside it to the station
+  ['Black Forest', 'Grand Canyon'],    // flies over the Simplon track on a bridge
 ];
+
+// Hand-made paths for the tracks that share a corridor or cross. [q, r, extras]
+const MOCK_PATHS = {
+  'Locomotive|Grand Canyon': [[0, 0], [1, -1], [2, -1], [3, -2], [4, -2], [5, -3], [6, -3], [7, -4]],
+  'Locomotive|Simplon Tunnel': [[0, 0], [1, -1, { lane: -1 }], [2, -1, { lane: -1 }], [3, -2, { lane: -1 }], [3, -3, { under: true }], [3, -4], [3, -5], [4, -6], [4, -7], [4, -8], [4, -9]],
+  'Iron Bridge|Grand Canyon': [[-3, 6], [-2, 6], [-1, 5], [0, 4], [1, 3], [2, 2], [3, 1], [3, 0], [3, -1], [3, -2, { lane: 1 }], [4, -2, { lane: 1 }], [5, -3, { lane: 1 }], [6, -3, { lane: 1 }], [7, -4]],
+  'Black Forest|Grand Canyon': [[-6, -1], [-5, -2], [-4, -2], [-3, -2], [-2, -2], [-1, -2], [0, -2], [1, -3, { dy: 0.25 }], [2, -3, { kind: 'bridge', dy: 0.6 }], [3, -3, { kind: 'bridge', over: true, dy: 1.0 }], [4, -3, { kind: 'bridge', dy: 0.6 }], [5, -4, { dy: 0.25 }], [6, -4], [7, -4]],
+};
+export function mockPath(a, b) {
+  const p = MOCK_PATHS[`${a.title}|${b.title}`];
+  return p ? p.map(([q, r, x]) => ({ q, r, ...(x || {}) })) : null;
+}
 
 export function createMockWorld({ seed = 7 } = {}) {
   const cache = new Map();
@@ -260,6 +302,11 @@ export function createMockWorld({ seed = 7 } = {}) {
     },
     findRoutes(fromTitle, toTitle) {
       const a = posOf(fromTitle), b = posOf(toTitle);
+      const fixed = mockPath({ title: fromTitle }, { title: toTitle });
+      if (fixed) {
+        const r = makeRoute(fromTitle, toTitle, fixed, terrainAt, 'direct');
+        return { cheap: { ...r, style: 'cheap' }, direct: r, same: true };
+      }
       const direct = makeRoute(fromTitle, toTitle, dedupe(hexLine(a, b)), terrainAt, 'direct');
       // cheap: bend through a waypoint off to one side
       const mid = { q: Math.round((a.q + b.q) / 2), r: Math.round((a.r + b.r) / 2) };
@@ -293,7 +340,7 @@ export function mockLinks(title) {
 
 // Starting levels of the mock tracks once the network is built: bare, local, express
 // (offering the final choice), freight and bullet, so every tag and train shows up.
-export const MOCK_START_LEVELS = [2, 1, 3, 3, 0, 1];
+export const MOCK_START_LEVELS = [2, 1, 3, 3, 0, 1, 1, 2];
 const FINALS = ['freight', 'bullet'];
 
 export function createMockGame({ world, buildInterval = 1.1, money = 400 }) {
@@ -508,20 +555,21 @@ export function createMockGame({ world, buildInterval = 1.1, money = 400 }) {
         emit('payday', { amount, income: amount, fares: 0, upkeep: 0 });
       }
       // build the network over the first seconds
-      if (built < MOCK_STATIONS.length && timeline >= built * buildInterval) {
+      if (built <= MOCK_TRACKS.length && timeline >= built * buildInterval) {
         const [from, to] = MOCK_TRACKS[built - 1];
         const routes = world.findRoutes(from, to);
         const route = routes.direct;
         const track = { id: nextId++, from, to, route, level: 0, typeId: null, trainId: null };
         state.tracks.push(track);
         const r1 = world.commitRoute(route);
-        const r2 = world.setBuilt(to);
-        const st = addStation(to);
+        const fresh = !state.stations.has(to);
+        const r2 = fresh ? world.setBuilt(to) : { revealed: [] };
+        const st = fresh ? addStation(to) : state.stations.get(to);
         emit('tilesRevealed', { tiles: [...r1.revealed, ...r2.revealed] });
-        emit('stationBuilt', { station: st, track });
+        if (fresh) emit('stationBuilt', { station: st, track });
         emit('trackBuilt', { track });
         built++;
-        if (built === MOCK_STATIONS.length) {
+        if (built === MOCK_TRACKS.length + 1) {
           state.tracks.forEach((tr, i) => {
             const lvl = MOCK_START_LEVELS[i] || 0;
             if (lvl >= 1) setTrain(tr, lvl === 1 ? 'local' : lvl === 2 ? 'express' : FINALS[i % 2]);

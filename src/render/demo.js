@@ -77,9 +77,27 @@ function showPreview() {
   previewOn = true;
 }
 
+// where the demo's shared corridor (a trunk with a track on each side) and flyover are
+const VIEWS = {
+  lanes: { x: 3.4, y: 1.4, z: -2.8, dist: 6, polar: 0.8 },
+  flyover: { x: 2.8, y: 2.0, z: -4.5, dist: 7, polar: 1.0 },
+};
+let viewIndex = 0;
+function flyTo(name) {
+  const v = VIEWS[name];
+  const rig = renderer._debug && renderer._debug.rig;
+  if (!v || !rig) return;
+  rig.glideTo({ x: v.x, y: v.y, z: v.z }, v.dist, 1.2, v.polar);
+  say(`camera: ${name}`);
+}
+if (params.has('view')) setTimeout(() => flyTo(params.get('view')), 5500);
+
 window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
-  if (k === 'f') {
+  if (k === 'c') {
+    const names = Object.keys(VIEWS);
+    flyTo(names[viewIndex++ % names.length]);
+  } else if (k === 'f') {
     const ids = game.state.trains.map((t) => t.id);
     if (!ids.length) return;
     const i = following == null ? 0 : ids.indexOf(following) + 1;

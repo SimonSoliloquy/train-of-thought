@@ -4,6 +4,7 @@
 import { MeshBuilder, rgb, shade, mix } from './builder.js';
 import { sampleRoute, routeLength, RAIL_LIFT } from './rail.js';
 import { TRACK_COLORS as C, ROUTE_PREVIEW } from './palette.js';
+import { LANES, lateralHits, sideGaps, halfGap, nearestOther, planSupports, spanWeights } from './lanes.js';
 
 export const TRACK = {
   step: 0.13,
@@ -72,11 +73,15 @@ function frameBox(bld, P, o, h, f, w, hh, d, color, noBottom = true) {
   bld.quad(A, E, H, D, shade(color, 0.75));
 }
 
-function railsAndSleeper(bld, A, B, withSleeper) {
+/** Sleeper half length towards a neighbouring lane: never longer than reaches its half of the gap. */
+function sleeperHalf(lim) { return lim === Infinity ? TRACK.sleeperLen / 2 : Math.min(TRACK.sleeperLen / 2, Math.max(TRACK.gauge / 2 + 0.02, lim - 0.012)); }
+
+function railsAndSleeper(bld, A, B, withSleeper, limL = Infinity, limR = Infinity) {
   const g2 = TRACK.gauge / 2, w2 = TRACK.railW / 2, rh = TRACK.railH;
   if (withSleeper) {
     const M = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2, z: (A.z + B.z) / 2, tx: A.tx, tz: A.tz, rx: A.rx, rz: A.rz };
-    frameBox(bld, M, 0, -rh - 0.012, 0, TRACK.sleeperLen, 0.024, TRACK.sleeperW, C.sleeper);
+    const hl = sleeperHalf(limL), hr = sleeperHalf(limR);
+    frameBox(bld, M, (hr - hl) / 2, -rh - 0.012, 0, hl + hr, 0.024, TRACK.sleeperW, C.sleeper);
   }
   for (const sgn of [-1, 1]) {
     const o = sgn * g2;
@@ -86,39 +91,80 @@ function railsAndSleeper(bld, A, B, withSleeper) {
   }
 }
 
-function ballast(bld, A, B) {
+/**
+ * The bed under one track. limL / limR: half the gap to a neighbouring lane on that side (Infinity when
+ * none): the two beds then meet exactly half way, flat at the same height, so side by side they read as
+ * one wide bed with nothing drawn twice (no z-fighting) and no bank between the tracks.
+ */
+function ballast(bld, A, B, limL = Infinity, limR = Infinity) {
   const t = TRACK.ballastTop, bb = TRACK.ballastBottom;
   const top = -TRACK.railH - 0.006;
-  ribbonQuad(bld, A, B, -t, top, t, top, C.ballast);
-  ribbonQuad(bld, A, B, t, top, bb, top - 0.08, C.ballastDark);
-  ribbonQuad(bld, A, B, -bb, top - 0.08, -t, top, C.ballastDark);
-  ribbonQuad(bld, A, B, bb, top - 0.08, bb + 0.01, top - 0.42, shade(C.ballastDark, 0.8));
-  ribbonQuad(bld, A, B, -bb - 0.01, top - 0.42, -bb, top - 0.08, shade(C.ballastDark, 0.8));
+  ribbonQuad(bld, A, B, -Math.min(t, limL), top, Math.min(t, limR), top, C.ballast);
+  for (const sgn of [-1, 1]) {
+    const lim = sgn < 0 ? limL : limR;
+    if (lim > t) {
+      const e = Math.min(lim, bb), h2 = top - 0.08 * (e - t) / (bb - t);
+      if (sgn > 0) ribbonQuad(bld, A, B, t, top, e, h2, C.ballastDark); else ribbonQuad(bld, A, B, -e, h2, -t, top, C.ballastDark);
+    }
+    if (lim >= bb) {
+      if (sgn > 0) ribbonQuad(bld, A, B, bb, top - 0.08, bb + 0.01, top - 0.42, shade(C.ballastDark, 0.8));
+      else ribbonQuad(bld, A, B, -bb - 0.01, top - 0.42, -bb, top - 0.08, shade(C.ballastDark, 0.8));
+    }
+  }
 }
 
-function bridgeDeck(bld, A, B) {
-  const w = 0.22, top = -TRACK.railH - 0.006, bot = top - 0.1;
-  ribbonQuad(bld, A, B, -w, top, w, top, C.deck);
-  ribbonQuad(bld, A, B, w, top + 0.075, w, bot, C.girder);
-  ribbonQuad(bld, A, B, -w, bot, -w, top + 0.075, C.girder);
-  ribbonQuad(bld, A, B, w - 0.025, top + 0.075, w, top + 0.075, shade(C.girder, 1.15));
-  ribbonQuad(bld, A, B, -w, top + 0.075, -w + 0.025, top + 0.075, shade(C.girder, 1.15));
-  ribbonQuad(bld, A, B, w, bot, -w, bot, shade(C.deck, 0.6));
+/** Bridge deck; depth: girder depth below the deck (deeper over a crossing span); limits as for ballast. */
+function bridgeDeck(bld, A, B, limL = Infinity, limR = Infinity, span = 0) {
+  const top = -TRACK.railH - 0.006, bot = top - (0.1 + 0.13 * span), par = 0.075 + 0.06 * span;
+  const wl = Math.min(0.22, limL), wr = Math.min(0.22, limR);
+  ribbonQuad(bld, A, B, -wl, top, wr, top, C.deck);
+  if (limR >= 0.22) {
+    ribbonQuad(bld, A, B, wr, top + par, wr, bot, C.girder);
+    ribbonQuad(bld, A, B, wr - 0.025, top + par, wr, top + par, shade(C.girder, 1.15));
+  }
+  if (limL >= 0.22) {
+    ribbonQuad(bld, A, B, -wl, bot, -wl, top + par, C.girder);
+    ribbonQuad(bld, A, B, -wl, top + par, -wl + 0.025, top + par, shade(C.girder, 1.15));
+  }
+  ribbonQuad(bld, A, B, wr, bot, -wl, bot, shade(C.deck, 0.6));
 }
 
-function pier(bld, P, ground) {
+/** Earth bank from the edge of the bed down to the land, on one side of raised ground or ledge track. */
+function embankSide(bld, A, B, side, ea, eb) {
+  const bb = TRACK.ballastBottom, top = -TRACK.railH - 0.006 - 0.08;
+  const col = C.embank;
+  const o1a = side * ea.reach, o1b = side * eb.reach;
+  const a0 = at(A, side * bb, top), b0 = at(B, side * bb, top);
+  const a1 = [A.x + A.rx * o1a, ea.gy, A.z + A.rz * o1a], b1 = [B.x + B.rx * o1b, eb.gy, B.z + B.rz * o1b];
+  if (side > 0) bld.quad(a0, b0, b1, a1, col); else bld.quad(a1, b1, b0, a0, col);
+}
+
+/** Stone abutment where a span ends beside another track; dir: +1 when the span lies ahead. */
+function abutment(bld, P, ground, dir) {
+  const top = P.y - TRACK.railH - 0.1;
+  const H = top - ground;
+  if (H < 0.04) return;
+  const Pm = { ...P, y: ground };
+  frameBox(bld, Pm, 0, H * 0.5, 0, 0.5, H, 0.26, C.pier);
+  frameBox(bld, Pm, 0, H - 0.025, 0, 0.56, 0.05, 0.32, C.pierDark);
+  frameBox(bld, Pm, 0, 0.05, 0, 0.58, 0.1, 0.34, C.pierDark);
+  // wing walls splaying back from the span
+  for (const s of [-1, 1]) frameBox(bld, Pm, s * 0.25, H * 0.4, -dir * 0.18, 0.07, H * 0.8, 0.36, shade(C.pier, 0.92));
+}
+
+function pier(bld, P, ground, oc = 0, wk = 1) {
   const top = P.y - TRACK.railH - 0.11;
   const H = top - ground;
   if (H < 0.04) return;
+  // oc / wk: a pier shared by tracks side by side stands centred on them and is that much wider
+  const Pm = { ...P, x: P.x + P.rx * oc, z: P.z + P.rz * oc, y: ground };
   if (H < 1.1) {
     // stone pier, slightly tapered: draw as two stacked boxes
-    const Pm = { ...P, y: ground };
-    frameBox(bld, Pm, 0, H * 0.5, 0, 0.36, H, 0.14, C.pier);
-    frameBox(bld, Pm, 0, 0.06, 0, 0.44, 0.12, 0.2, C.pierDark);
+    frameBox(bld, Pm, 0, H * 0.5, 0, 0.36 * wk, H, 0.14, C.pier);
+    frameBox(bld, Pm, 0, 0.06, 0, 0.44 * wk, 0.12, 0.2, C.pierDark);
   } else if (H < 2.2) {
     // timber trestle: legs splayed wider the taller it stands, cross braces and X-bracing
-    const Pm = { ...P, y: ground };
-    const base = 0.3 + 0.08 * H, topHalf = 0.17;
+    const base = (0.3 + 0.08 * H) * wk, topHalf = 0.17 * wk;
     const halfAt = (y) => base - (base - topHalf) * (y / H);
     const segs = Math.max(2, Math.ceil(H / 0.5));
     for (const s of [-1, 1]) {
@@ -140,20 +186,19 @@ function pier(bld, P, ground) {
       strut(bld, mid, (ax + bx) / 2, Math.atan2(y - yPrev, bx - ax), len, shade(C.deck, 0.78));
       yPrev = y;
     }
-    frameBox(bld, Pm, 0, H - 0.02, 0, 0.42, 0.05, 0.08, shade(C.deck, 0.9));
+    frameBox(bld, Pm, 0, H - 0.02, 0, 0.42 * wk, 0.05, 0.08, shade(C.deck, 0.9));
   } else {
     // tall stone viaduct pier: tapered column with string courses, wide footing
-    const Pm = { ...P, y: ground };
     const n = Math.max(3, Math.ceil(H / 0.6));
     for (let k = 0; k < n; k++) {
       const y0 = (k / n) * H, y1 = ((k + 1) / n) * H;
       const u = (y0 + y1) / 2 / H;
-      const w = 0.62 - 0.26 * u, d = 0.3 - 0.12 * u;
+      const w = (0.62 - 0.26 * u) * wk, d = 0.3 - 0.12 * u;
       frameBox(bld, Pm, 0, (y0 + y1) / 2, 0, w, y1 - y0 + 0.005, d, k % 2 ? C.pier : shade(C.pier, 0.94));
       if (k > 0) frameBox(bld, Pm, 0, y0, 0, w + 0.04, 0.04, d + 0.04, C.pierDark);
     }
-    frameBox(bld, Pm, 0, 0.08, 0, 0.74, 0.16, 0.38, C.pierDark);
-    frameBox(bld, Pm, 0, H - 0.03, 0, 0.46, 0.06, 0.2, C.pierDark);
+    frameBox(bld, Pm, 0, 0.08, 0, 0.74 * wk, 0.16, 0.38, C.pierDark);
+    frameBox(bld, Pm, 0, H - 0.03, 0, 0.46 * wk, 0.06, 0.2, C.pierDark);
   }
 }
 
@@ -287,15 +332,27 @@ export function buriedIntervals(S, buried) {
  * that are not bridges, as segments {ax, az, ay, bx, bz, by, capA, capB} with the target
  * ground height just under the trackbed. Ends next to a tunnel portal do not grade past
  * the portal, so the hill over the tunnel mouth stays whole.
+ * opts.network / opts.id: the other built tracks. A stretch with another track passing under it nearby is
+ * not graded up to its height (the lower track's bench wins there; the stretch stands on the earth bank
+ * that buildTrack draws instead), so the upper track never buries the lower one.
  */
-export function gradeSegments(route, naturalAt) {
+export function gradeSegments(route, naturalAt, opts = {}) {
   const S = resample(route, 0.3);
   const { kinds, buried } = buriedSegments(route, S, naturalAt);
+  const net = opts.network || null;
   const out = [];
   const drop = RAIL_LIFT + 0.03;
+  const clear = 1.0; // a lower track this near would be buried by the bench of this one
   for (let i = 0; i + 1 < S.length; i++) {
     if (buried[i] || kinds[i] === 'bridge') continue;
     const A = S[i], B = S[i + 1];
+    if (net && net.size) {
+      let over = false;
+      for (const P of [A, B, { x: (A.x + B.x) / 2, z: (A.z + B.z) / 2, y: (A.y + B.y) / 2 }]) {
+        if (nearestOther(net, opts.id, P.x, P.z, clear, { below: P.y - RAIL_LIFT - LANES.sameLevel })) { over = true; break; }
+      }
+      if (over) continue;
+    }
     // how far the bed sits above or below the natural land beside it (embankment / cutting)
     let rise = 0;
     if (typeof naturalAt === 'function') {
@@ -318,25 +375,73 @@ export function gradeSegments(route, naturalAt) {
 /**
  * Build the whole track for one route, emitted in arc-length order so drawRange can
  * animate it drawing itself from -> to.
+ * env.network (lanes.js Network) and env.id: the other built tracks, so beds merge beside a parallel lane,
+ * piers keep clear of any track beneath a bridge, and raised track gets an earth bank.
  * @param {import('../types.js').Route} route
- * @param {{groundAt?: (x:number,z:number)=>number}} [env]
- * @returns {{builder: MeshBuilder, marks: {s:number, v:number}[], portals: {x:number,y:number,z:number,into:number}[], length:number, kinds: Record<string, number>}}
+ * @param {{groundAt?: (x:number,z:number)=>number, naturalAt?: Function, network?: object, id?: any}} [env]
+ * @returns {{builder: MeshBuilder, marks: {s:number, v:number}[], portals: {x:number,y:number,z:number,into:number}[], supports: {x:number,z:number,type:string,i:number}[], length:number, kinds: Record<string, number>}}
  */
 export function buildTrack(route, env = {}) {
   const groundAt = env.groundAt || (() => -Infinity);
+  const net = env.network && env.network.size ? env.network : null;
+  const selfId = env.id;
   const bld = new MeshBuilder();
   const S = resample(route);
   const L = routeLength(route);
   const marks = [{ s: 0, v: 0 }];
   const portals = [];
   const kinds = { ground: 0, ledge: 0, bridge: 0, tunnel: 0 };
-  let lastPier = -Infinity;
   // A tunnel segment is only hidden where it is actually under enough hill; tunnel-kind
   // stretches still in the open are drawn as a cutting. Portals sit at the hill face.
   const natAt = env.naturalAt || env.groundAt;
   const hasGround = typeof natAt === 'function';
   const { kinds: segKinds, buried } = buriedSegments(route, S, natAt);
   const rockAt = (x, y, z) => { const g = natAt(x, z); return Number.isFinite(g) ? g > y + TUNNEL_COVER : true; };
+  const supportAt = new Map();
+  const supports = [];
+  for (const sp of planSupports({ S, kinds: segKinds, buried, groundAt, net, selfId, pierEvery: TRACK.pierEvery })) {
+    supportAt.set(sp.i, sp);
+    supports.push({ x: S[sp.i].x, z: S[sp.i].z, type: sp.type, i: sp.i });
+  }
+  const span = spanWeights(S, segKinds, buried, net, selfId);
+  // neighbouring lanes beside a segment (half gaps), and the earth bank under raised track
+  const lims = (A, B) => {
+    if (!net) return [Infinity, Infinity, false, false];
+    const P = { x: (A.x + B.x) / 2, z: (A.z + B.z) / 2, tx: A.tx, tz: A.tz, rx: A.rx, rz: A.rz };
+    const hits = lateralHits(net, selfId, P, (A.y + B.y) / 2 - RAIL_LIFT, LANES.reach);
+    const g = sideGaps(hits);
+    // anything else (a track under or over) within reach of a side: no wall or bank may stand there
+    let nearL = false, nearR = false;
+    for (const h of hits) { if (h.lat < 0) nearL = true; else nearR = true; }
+    return [halfGap(g.left), halfGap(g.right), nearL, nearR];
+  };
+  const bankCache = new Map();
+  const bank = (i, side) => {
+    const key = i * 2 + (side > 0 ? 1 : 0);
+    let v = bankCache.get(key);
+    if (v !== undefined) return v;
+    const P = S[i];
+    const bb = TRACK.ballastBottom, bedY = P.y - TRACK.railH - 0.006 - 0.08;
+    const gAt = (o) => groundAt(P.x + P.rx * side * o, P.z + P.rz * side * o);
+    const g0 = gAt(bb);
+    v = null;
+    if (Number.isFinite(g0) && bedY - g0 > 0.3) {
+      let reach = bb + (bedY - g0) * 0.9;
+      let g1 = gAt(reach);
+      if (Number.isFinite(g1)) reach = Math.min(2.2, bb + Math.max(0, bedY - g1) * 0.9);
+      if (net) {
+        const hits = lateralHits(net, selfId, P, P.y - RAIL_LIFT, reach + 0.4);
+        for (const h of hits) {
+          if (h.dy > -LANES.sameLevel || h.lat * side <= 0) continue;
+          reach = Math.min(reach, Math.max(bb + 0.05, Math.abs(h.lat) - 0.34));
+        }
+      }
+      g1 = gAt(reach);
+      if (Number.isFinite(g1)) v = { reach, gy: Math.min(g1, bedY - 0.05) - 0.03 };
+    }
+    bankCache.set(key, v);
+    return v;
+  };
   for (let i = 0; i + 1 < S.length; i++) {
     const A = S[i], B = S[i + 1];
     const kind = segKinds[i];
@@ -362,16 +467,19 @@ export function buildTrack(route, env = {}) {
       portals.push({ x: C0.x, y: C0.y, z: C0.z, into: d });
     }
     if (buried[i]) { marks.push({ s: B.s, v: bld.vertexCount }); continue; }
+    const [limL, limR, nearL, nearR] = lims(A, B);
     if (kind === 'bridge') {
-      bridgeDeck(bld, A, B);
-      const g = groundAt(A.x, A.z);
-      const tall = Number.isFinite(g) && A.y - g > 2.3;
-      if (A.s - lastPier >= (tall ? TRACK.pierEvery * 2 : TRACK.pierEvery)) {
-        if (Number.isFinite(g)) pier(bld, A, g);
-        lastPier = A.s;
+      bridgeDeck(bld, A, B, limL, limR, span[i]);
+      const sp = supportAt.get(i);
+      if (sp) {
+        const g = groundAt(A.x, A.z);
+        if (Number.isFinite(g)) {
+          if (sp.type === 'abutment') abutment(bld, A, g, sp.dir); else pier(bld, A, g, sp.oc, sp.wk);
+        }
       }
     } else {
-      ballast(bld, A, B);
+      ballast(bld, A, B, limL, limR);
+      let wallSide = 0;
       if (kind === 'ledge') {
         const side = 0.62;
         const gl = groundAt(A.x - A.rx * side, A.z - A.rz * side);
@@ -382,16 +490,22 @@ export function buildTrack(route, env = {}) {
           const glB = groundAt(B.x + B.rx * side * sgn, B.z + B.rz * side * sgn);
           const dropA = Math.max(0.05, A.y - low);
           const dropB = Math.max(0.05, B.y - (Number.isFinite(glB) ? Math.min(glB, B.y) : low));
-          retainingWall(bld, A, B, sgn, Math.min(dropA, 3), Math.min(dropB, 3));
-        } else {
-          retainingWall(bld, A, B, 1, 0.4, 0.4);
+          if (!(sgn < 0 ? nearL : nearR)) { retainingWall(bld, A, B, sgn, Math.min(dropA, 3), Math.min(dropB, 3)); wallSide = sgn; }
+        } else if (!nearR) {
+          retainingWall(bld, A, B, 1, 0.4, 0.4); wallSide = 1;
         }
       }
+      // raised track stands on an earth bank, not in the air (where the land is not graded up to it)
+      for (const side of [-1, 1]) {
+        if (side === wallSide) continue;
+        const ea = bank(i, side), eb = bank(i + 1, side);
+        if (ea && eb) embankSide(bld, A, B, side, ea, eb);
+      }
     }
-    railsAndSleeper(bld, A, B, true);
+    railsAndSleeper(bld, A, B, true, limL, limR);
     marks.push({ s: B.s, v: bld.vertexCount });
   }
-  return { builder: bld, marks, portals, length: L, kinds, buried: buriedIntervals(S, buried) };
+  return { builder: bld, marks, portals, supports, length: L, kinds, buried: buriedIntervals(S, buried) };
 }
 
 /** Vertex count to draw so the track appears built up to arc length s. */

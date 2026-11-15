@@ -17,6 +17,10 @@ export const WORLD = {
   revealTrack: 2,           // tiles revealed along committed track
   revealGhost: -1,          // tiles revealed around an unbuilt link's reserved spot; -1 = none (nothing shows in the fog)
   maxElevation: 4,          // world units
+  laneSpacing: 0.26,        // world units between parallel tracks in a shared corridor
+  maxLanesPerSide: 2,       // a corridor holds the first track plus this many each side
+  laneCostFactor: 0.6,      // laying track beside existing track costs this share of the hex price
+  crossingClearance: 0.6,   // least height between two rails where one track crosses over another
 };
 
 export const ECON = {

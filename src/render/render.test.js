@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { BIOMES, TRAIN_TYPES } from '../config.js';
+import { BIOMES, TRAIN_TYPES, WORLD } from '../config.js';
 import { hexToWorld, hexSpiral } from '../hex.js';
 import { sampleRoute, routeLength, RAIL_LIFT } from './rail.js';
 import { createMockWorld, createMockGame, MOCK_TRACKS, mockTerrain } from './mock.js';
@@ -13,8 +13,9 @@ import { Surface, gridToWorld, EDGE_SINK } from './surface.js';
 import { gradeSegments, TUNNEL_COVER } from './track.js';
 import { sampleRoute as sampleRaw } from '../route.js';
 import { createSharedUniforms, createMaterials } from './materials.js';
-import { buildTrack, buildRibbon, vertexCountAt, resample } from './track.js';
-import { carOffsets, placeCars, TrainsView, vehicleBuilders, drawableType } from './trains.js';
+import { buildTrack, buildRibbon, vertexCountAt, resample, TRACK } from './track.js';
+import { carOffsets, placeCars, TrainsView, vehicleBuilders, drawableType, trainWidth, CAR_SPECS } from './trains.js';
+import { Network, LANES, nearestOther, planSupports } from './lanes.js';
 import { UpgradeTags, tagAnchor, quoteOptions } from './upgrades.js';
 import { MOCK_START_LEVELS } from './mock.js';
 import { buildStationBuilder, chooseStationYaw, StationsView, trackDirsAt, signpostLinks, layoutSignposts, MAX_SIGNPOSTS, SIGN_RING } from './stations.js';
@@ -778,4 +779,210 @@ test('article cards: pose floats above the station and turns; crop covers; initi
   cards.update(0.016, built, state);
   assert.equal(cards.cards.size, 1);
   cards.dispose();
+});
+
+// ------------------------------------------------------------ lanes and crossings
+
+/** A straight route from (x0, z0) to (x1, z1); y(u) gives the rail height, kind(u) its kind. */
+function lineRoute(x0, z0, x1, z1, y, kind = () => 'ground', n = 80) {
+  const points = [];
+  for (let i = 0; i <= n; i++) {
+    const u = i / n;
+    points.push({ x: x0 + (x1 - x0) * u, z: z0 + (z1 - z0) * u, y: typeof y === 'function' ? y(u) : y, kind: kind(u) });
+  }
+  return { from: 'a', to: 'b', style: 'cheap', hexes: [], points, length: 0, cost: 0 };
+}
+const distXZ = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+const lowerDist = (p, route) => {
+  let best = Infinity;
+  for (let i = 0; i + 1 < route.points.length; i++) {
+    const a = route.points[i], b = route.points[i + 1];
+    const dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz || 1;
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / l2));
+    best = Math.min(best, Math.hypot(a.x + dx * t - p.x, a.z + dz * t - p.z));
+  }
+  return best;
+};
+
+test('piers skip every spot within a track-width of another track beneath the bridge', () => {
+  // a ground track along x at rail height 0.3; another crosses over it on a bridge (not flagged anywhere:
+  // the check is geometric, against all built tracks), standing 1.5 above the land
+  const lower = lineRoute(-4, 0, 4, 0, 0.3);
+  const upper = lineRoute(0.0, -5, 0.0, 5, (u) => 1.8, (u) => (u > 0.1 && u < 0.9 ? 'bridge' : 'ground'), 200);
+  const net = new Network();
+  net.set('lower', lower); net.set('upper', upper);
+  const env = { groundAt: () => 0.2, naturalAt: () => 0.2, network: net, id: 'upper' };
+  const withNet = buildTrack(upper, env);
+  const bare = buildTrack(upper, { groundAt: env.groundAt, naturalAt: env.naturalAt });
+  assert.ok(bare.supports.some((s) => Math.abs(s.z) < LANES.pierClear), 'without the lower track a pier would stand on it');
+  assert.ok(withNet.supports.length >= 4, 'piers elsewhere along the bridge');
+  for (const s of withNet.supports) assert.ok(lowerDist(s, lower) >= LANES.pierClear - 1e-9, `support at z=${s.z} too close to the lower track`);
+  const abut = withNet.supports.filter((s) => s.type === 'abutment');
+  assert.equal(abut.length, 2, 'an abutment each side of the span');
+  assert.ok(abut[0].z * abut[1].z < 0, 'one either side');
+  assert.ok(finiteArr(withNet.builder.pos));
+});
+
+test('a track passing under a bridge is not touched: its own piers and grading stay clear', () => {
+  const lower = lineRoute(-4, 0, 4, 0, 0.3, (u) => (u > 0.3 && u < 0.7 ? 'bridge' : 'ground'));
+  const upper = lineRoute(0.0, -5, 0.0, 5, (u) => 1.8, (u) => (u > 0.1 && u < 0.9 ? 'bridge' : 'ground'), 200);
+  const net = new Network(); net.set('lower', lower); net.set('upper', upper);
+  // seen from below, the upper track is above it, not under it: the lower bridge keeps its piers
+  const S = resample(lower);
+  const kinds = S.slice(0, -1).map((p) => p.kind);
+  const sup = planSupports({ S, kinds, buried: kinds.map(() => false), groundAt: () => 0.2, net, selfId: 'lower' });
+  assert.ok(sup.some((p) => p.type === 'pier'));
+  // the upper track's ramps are not graded up over the lower track, and nothing is graded where it bridges
+  const segs = gradeSegments(upper, () => 0.2, { network: net, id: 'upper' });
+  for (const sg of segs) assert.ok(Math.min(Math.abs(sg.az), Math.abs(sg.bz)) > 0.5, 'graded under the lower track');
+  const plain = gradeSegments(upper, () => 0.2);
+  assert.ok(plain.length >= segs.length);
+});
+
+test('mock flyover: marked over, clear of the lower rails, nothing stands within a track-width of them', () => {
+  const { game } = mockRoutes();
+  const st = game.state;
+  const net = new Network();
+  for (const t of st.tracks) net.set(t.id, t.route);
+  const fly = st.tracks.find((t) => t.route.hexes.some((h) => h.over));
+  assert.ok(fly, 'the demo has a flyover');
+  const lowerT = st.tracks.find((t) => t.route.hexes.some((h) => h.under));
+  assert.ok(lowerT && lowerT !== fly);
+  assert.ok(fly.route.points.some((p) => p.kind === 'bridge'));
+  // geometric crossing: where the two centrelines meet, the upper rail is at least crossingClearance higher
+  let found = null;
+  const F = fly.route.points, B = lowerT.route.points;
+  for (let i = 0; i + 1 < F.length && !found; i++) for (let j = 0; j + 1 < B.length && !found; j++) {
+    const p = F[i], q = F[i + 1], r = B[j], s = B[j + 1];
+    const d1x = q.x - p.x, d1z = q.z - p.z, d2x = s.x - r.x, d2z = s.z - r.z, den = d1x * d2z - d1z * d2x;
+    if (Math.abs(den) < 1e-9) continue;
+    const t = ((r.x - p.x) * d2z - (r.z - p.z) * d2x) / den, u = ((r.x - p.x) * d1z - (r.z - p.z) * d1x) / den;
+    if (t >= 0 && t <= 1 && u >= 0 && u <= 1) found = { fy: p.y + (q.y - p.y) * t, by: r.y + (s.y - r.y) * u };
+  }
+  assert.ok(found, 'the two tracks cross');
+  assert.ok(found.fy - found.by >= WORLD.crossingClearance, `clearance ${found.fy - found.by}`);
+  // supports of every track keep clear of any track below them (not only at over hexes)
+  for (const t of st.tracks) {
+    const out = buildTrack(t.route, { groundAt: () => 0, naturalAt: () => 0, network: net, id: t.id });
+    for (const sp of out.supports) {
+      const y = t.route.points.reduce((b, p) => (distXZ(p, sp) < distXZ(b, sp) ? p : b)).y;
+      const o = nearestOther(net, t.id, sp.x, sp.z, LANES.pierClear, { below: y - LANES.sameLevel });
+      assert.equal(o, null, `support of track ${t.id} stands within ${LANES.pierClear} of track ${o && o.id}`);
+    }
+    if (t === fly) {
+      assert.ok(out.supports.some((sp) => sp.type === 'abutment'), 'flyover has abutments');
+      assert.ok(finiteArr(out.builder.pos) && finiteArr(out.builder.nor));
+    }
+  }
+});
+
+test('mock lanes: tracks run side by side one lane apart, then split; beds merge without overlap', () => {
+  const { game } = mockRoutes();
+  const st = game.state;
+  const lanes = st.tracks.filter((t) => t.route.hexes.some((h) => h.lane));
+  assert.equal(lanes.length, 2, 'two tracks join the trunk, one each side');
+  assert.ok(lanes.some((t) => t.route.hexes.some((h) => h.lane > 0)) && lanes.some((t) => t.route.hexes.some((h) => h.lane < 0)), 'lanes on both sides');
+  const trunk = st.tracks.find((t) => t.from === 'Locomotive' && t.to === 'Grand Canyon');
+  const sides = new Map();
+  for (const t of lanes) {
+    // parallel within tolerance: points that run beside the trunk sit one lane spacing from its centreline
+    let beside = 0;
+    for (const p of t.route.points) {
+      const d = lowerDist(p, trunk.route);
+      if (Math.abs(d - WORLD.laneSpacing) < 0.03) beside++;
+    }
+    assert.ok(beside >= 8, `track ${t.id} runs beside the trunk for several hexes (${beside})`);
+    sides.set(t.id, beside);
+  }
+  // rails of neighbouring tracks never overlap: the gauge is narrower than a lane
+  const net = new Network();
+  for (const t of st.tracks) net.set(t.id, t.route);
+  assert.ok(WORLD.laneSpacing - TRACK.gauge - TRACK.railW > 0.05, 'the rails of neighbouring lanes keep apart');
+  // two straight lanes: each bed stops at the line half way between them
+  const a = lineRoute(-3, 0, 3, 0, 0.5), b = lineRoute(-3, WORLD.laneSpacing, 3, WORLD.laneSpacing, 0.5);
+  const n2 = new Network(); n2.set('a', a); n2.set('b', b);
+  const outA = buildTrack(a, { groundAt: () => 0.2, naturalAt: () => 0.2, network: n2, id: 'a' });
+  const outB = buildTrack(b, { groundAt: () => 0.2, naturalAt: () => 0.2, network: n2, id: 'b' });
+  const mid = WORLD.laneSpacing / 2;
+  let maxA = -Infinity, minB = Infinity;
+  for (let i = 2; i < outA.builder.pos.length; i += 3) maxA = Math.max(maxA, outA.builder.pos[i]);
+  for (let i = 2; i < outB.builder.pos.length; i += 3) minB = Math.min(minB, outB.builder.pos[i]);
+  assert.ok(maxA <= mid + 1e-6 && minB >= mid - 1e-6, `beds overlap: ${maxA} vs ${minB}`);
+  // a lone track keeps its full bed
+  const lone = buildTrack(a, { groundAt: () => 0.2, naturalAt: () => 0.2 });
+  let maxLone = -Infinity;
+  for (let i = 2; i < lone.builder.pos.length; i += 3) maxLone = Math.max(maxLone, lone.builder.pos[i]);
+  assert.ok(maxLone > mid + 0.1);
+});
+
+test('trains in neighbouring lanes pass side by side without their meshes meeting', () => {
+  for (const id of Object.keys(CAR_SPECS)) {
+    assert.ok(trainWidth(id) <= WORLD.laneSpacing - 0.04, `${id} is ${trainWidth(id)} wide for a lane of ${WORLD.laneSpacing}`);
+  }
+  // two lanes round a bend, every train type against every other, cars shifted against each other
+  const bend = (off) => {
+    const points = [];
+    for (let i = 0; i <= 120; i++) {
+      const u = i / 120, a = u * 2.4;
+      const R = 3 - off; // concentric: the inner lane is tighter
+      points.push({ x: Math.sin(a) * R, z: -3 + Math.cos(a) * R, y: 0.3, kind: 'ground' });
+    }
+    return { from: 'a', to: 'b', style: 'cheap', hexes: [], points, length: 0, cost: 0 };
+  };
+  const laneA = bend(0), laneB = bend(WORLD.laneSpacing);
+  const corners = (p, halfLen, halfW) => {
+    const fx = p.dx, fz = p.dz, rx = -fz, rz = fx;
+    return [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(([a, b]) => [p.x + fx * halfLen * a + rx * halfW * b, p.z + fz * halfLen * a + rz * halfW * b]);
+  };
+  const sat = (P, Q) => {
+    for (const poly of [P, Q]) {
+      for (let i = 0; i < 4; i++) {
+        const a = poly[i], b = poly[(i + 1) % 4];
+        const nx = -(b[1] - a[1]), nz = b[0] - a[0];
+        const proj = (pts) => { let lo = Infinity, hi = -Infinity; for (const c of pts) { const d = c[0] * nx + c[1] * nz; lo = Math.min(lo, d); hi = Math.max(hi, d); } return [lo, hi]; };
+        const [l1, h1] = proj(P), [l2, h2] = proj(Q);
+        if (h1 < l2 || h2 < l1) return false; // a separating axis: no overlap
+      }
+    }
+    return true;
+  };
+  let overlaps = 0, checked = 0;
+  for (const ta of Object.keys(CAR_SPECS)) for (const tb of Object.keys(CAR_SPECS)) {
+    const oa = carOffsets(ta), ob = carOffsets(tb);
+    for (let k = 0; k <= 12; k++) {
+      const pa = placeCars(laneA, 0.5 + k * 0.03, true, oa), pb = placeCars(laneB, 0.6 + k * 0.02, true, ob);
+      for (let i = 0; i < pa.length; i++) for (let j = 0; j < pb.length; j++) {
+        checked++;
+        if (sat(corners(pa[i], oa[i].half, trainWidth(ta) / 2), corners(pb[j], ob[j].half, trainWidth(tb) / 2))) overlaps++;
+      }
+    }
+  }
+  assert.ok(checked > 500);
+  assert.equal(overlaps, 0, 'cars in neighbouring lanes intersect');
+});
+
+test('upgrade tags of tracks in one corridor hang over their own stretch, not on top of each other', () => {
+  const { game } = mockRoutes();
+  const st = game.state;
+  const net = new Network();
+  for (const t of st.tracks) net.set(t.id, t.route);
+  const taken = [];
+  const anchors = [];
+  for (const t of st.tracks) {
+    const a = tagAnchor(t.route, () => 0, { network: net, id: t.id, taken });
+    taken.push(a); anchors.push({ id: t.id, a });
+    assert.ok(lowerDist(a, t.route) < 0.02, 'the tag floats over its own track');
+  }
+  for (const k of anchors) {
+    const near = nearestOther(net, k.id, k.a.x, k.a.z, 5);
+    assert.ok(near, 'there is another track');
+  }
+  for (let i = 0; i < anchors.length; i++) for (let j = i + 1; j < anchors.length; j++) {
+    assert.ok(distXZ(anchors[i].a, anchors[j].a) > 0.8, `tags of tracks ${anchors[i].id} and ${anchors[j].id} are ${distXZ(anchors[i].a, anchors[j].a).toFixed(2)} apart`);
+  }
+  // the track that splits off north has a stretch of its own: its tag floats over that, not over the corridor
+  const split = st.tracks.find((t) => t.from === 'Locomotive' && t.to === 'Simplon Tunnel');
+  const at = anchors.find((k) => k.id === split.id).a;
+  const o = nearestOther(net, split.id, at.x, at.z, 3);
+  assert.ok(!o || o.d > 0.8, 'tag of the splitting track over a stretch where it runs alone');
 });

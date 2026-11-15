@@ -147,6 +147,7 @@ export function createRenderer({ container, game, world }) {
   const upgrades = new UpgradeTags({
     game, labels,
     groundAt: (x, z) => terrain.groundAt(x, z),
+    network: tracks.network,
     onClick: (trackId, typeId) => emitPick({ kind: 'upgrade', trackId, typeId }),
   });
   terrain.onChange = (box) => tracks.terrainChanged(box);

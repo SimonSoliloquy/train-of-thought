@@ -10,7 +10,8 @@
 import { pathToFileURL } from 'node:url';
 import { createWorld } from './index.js';
 import { WORLD } from '../config.js';
-import { hexDistance, hashString, mulberry32 } from '../hex.js';
+import { hexDistance, hashString, hexKey, mulberry32 } from '../hex.js';
+import { measureNetwork } from './measure.mjs';
 
 const SEEDS = Number(process.argv[2] ?? 24);
 const TARGET = Number(process.argv[3] ?? 15);
@@ -127,9 +128,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const L = { shared: [], unshared: [], parent: [], nearest: [] };
   const D = { routes: [], first8: [], stationSd: [], stationRange: [], stationElev: [] };
   const avg = (a) => a.reduce((s, x) => s + x, 0) / (a.length || 1);
+  const M = [];
   for (let s = 0; s < SEEDS; s++) {
     const { world, results, timings, built, linksOf } = simulate(s + 1);
     allT.push(...timings);
+    const stationHexes = new Set(built.map((t) => { const p = world.placements.get(t); return hexKey(p.q, p.r); }));
+    M.push(measureNetwork(results.map((r) => r.cheap), stationHexes));
     const kinds = new Set();
     for (const r of results) {
       agg.cheap.push(r.cheap); agg.direct.push(r.direct);
@@ -178,6 +182,14 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const weak = D.first8.filter((f) => f.realTunnel < 2 || f.bridge < 2);
   console.log(`  first 8 routes per seed with >= 2 real tunnels and >= 2 bridges: ${SEEDS - weak.length}/${SEEDS}` +
     (weak.length ? ` (short: ${weak.map((f) => `${f.seed}:T${f.realTunnel}B${f.bridge}`).join(' ')})` : ''));
+  // tracks: do they lie on one another, cross at grade, come too close? (committed cheap routes)
+  const sum = (k) => M.reduce((a, m) => a + m[k], 0);
+  console.log(`tracks: ${(sum('stacked') / sum('routeHexes') * 100).toFixed(1)}% of committed route hexes (outside stations) on another track's centreline; ` +
+    `${sum('atGrade')} same-height crossings of ${sum('crossings')} (min clearance ${Math.min(...M.map((m) => m.minClear).filter((x) => !Number.isNaN(x))).toFixed(2)})`);
+  console.log(`  shared corridors: ${sum('laneRoutes')}/${sum('routes')} routes run in a lane, ${sum('laneHexes')} lane hexes ` +
+    `(${(sum('laneHexes') / Math.max(1, sum('laneRoutes'))).toFixed(1)} per such route); over ${sum('over')}, under ${sum('under')}; ` +
+    `min distance between tracks outside stations ${Math.min(...M.map((m) => m.minDist)).toFixed(3)} (laneSpacing ${WORLD.laneSpacing}), ` +
+    `seeds under 0.8 x laneSpacing: ${M.filter((m) => m.minDist < 0.8 * WORLD.laneSpacing).length}/${SEEDS}`);
   allT.sort((a, b) => a - b);
   console.log(`findRoutes: avg ${avg(allT).toFixed(2)} ms, median ${allT[allT.length >> 1].toFixed(2)} ms, p95 ${allT[Math.floor(allT.length * 0.95)].toFixed(2)} ms, max ${allT.at(-1).toFixed(2)} ms (includes cold terrain)`);
   const meanUnshared = avg(L.unshared);

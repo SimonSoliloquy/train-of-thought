@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createWorld } from './index.js';
 import { createTerrain, ELEV_STEP } from './terrain.js';
-import { createRouter, classify, MAX_RISE_PER_HEX, TUNNEL_DEPTH_LEVELS, LEDGE_SIDE_SLOPE } from './router.js';
+import { createRouter, classify, hexPrice, MAX_RISE_PER_HEX, TUNNEL_DEPTH_LEVELS, LEDGE_SIDE_SLOPE } from './router.js';
+import { measureNetwork } from './measure.mjs';
 import { simulate, routeDrama, REAL_COVER } from './stats.mjs';
 import { RESERVATION_SPACING, RESERVATION_REACH } from './layout.js';
 import { WORLD, ECON, BIOMES } from '../config.js';
-import { hexDistance, hexToWorld, hexSpiral, worldToHex } from '../hex.js';
+import { hexDistance, hexKey, hexToWorld, hexSpiral, worldToHex } from '../hex.js';
 import { routeLength } from '../route.js';
 
 // ---- helpers --------------------------------------------------------------------
@@ -55,7 +56,9 @@ function checkRoute(world, route, terrain) {
     assert.ok(!hx.some((h) => h.q === p.q && h.r === p.r), `route passes through station ${p.title}`);
   }
   // cost
-  assert.equal(route.cost, hx.reduce((s, h) => s + ECON.trackCostPerHex[h.kind], 0));
+  // lane hexes at WORLD.laneCostFactor of the hex price, total rounded
+  assert.equal(route.cost, Math.round(hx.reduce((s, h) => s + hexPrice(h), 0)));
+  for (const h of hx) assert.ok(!h.lane || Math.abs(h.lane) <= WORLD.maxLanesPerSide, 'lane within the cap');
   // points
   const pts = route.points;
   assert.equal(pts.length, (hx.length - 1) * 8 + 1);
@@ -77,13 +80,16 @@ function checkRoute(world, route, terrain) {
   for (let i = 0; i < hx.length; i++) {
     const c = pts[i * 8];
     const w = hexToWorld(hx[i].q, hx[i].r);
-    assert.ok(Math.abs(c.x - w.x) < 1e-9 && Math.abs(c.z - w.z) < 1e-9, 'passes through hex centres');
+    // through the hex centre, or a whole number of lane spacings beside it in a shared corridor
+    const off = Math.hypot(c.x - w.x, c.z - w.z);
+    assert.ok(Math.abs(off - Math.abs(hx[i].lane || 0) * WORLD.laneSpacing) < 0.03, `hex ${i} centre offset ${off}, lane ${hx[i].lane}`);
     const t = terrain(hx[i].q, hx[i].r);
     const rail = Math.round(c.y / ELEV_STEP);
     const ground = Math.round(t.elevation / ELEV_STEP);
     if (t.water) assert.equal(hx[i].kind, 'bridge', 'water needs a bridge');
     if (hx[i].kind === 'tunnel') assert.ok(t.elevation - c.y >= TUNNEL_DEPTH_LEVELS * ELEV_STEP - 1e-9, 'tunnel runs below ground');
-    if (hx[i].kind === 'bridge') assert.ok(t.water || c.y - t.elevation >= 0.6 - 1e-9, 'bridge spans water or a gap');
+    if (hx[i].kind === 'bridge') assert.ok(t.water || hx[i].over || c.y - t.elevation >= 0.6 - 1e-9, 'bridge spans water, a gap or a track');
+    if (hx[i].over) assert.equal(hx[i].kind, 'bridge', 'an over crossing is a bridge');
     if (t.water) assert.ok(c.y > t.elevation, 'bridge above water');
     assert.ok(Math.abs(ground - rail) <= 1 || hx[i].kind !== 'ground', 'ground track sits at ground');
     if (i > 0) {
@@ -500,18 +506,156 @@ test('routes: throws for unplaced titles', () => {
   assert.ok(w.findRoutes('A', 'B').cheap);
 });
 
-test('routes: prefer not to run along existing track', () => {
+test('routes: a second track between the same stations runs beside the first, never on it', () => {
   // Same pair routed twice: once on a clean map, once after committing its own cheap route.
-  // With track down, the new cheap route should overlap it no more than before (it may
-  // still reuse it when that is genuinely cheaper; the penalty only discourages it).
-  const w = createWorld({ seed: 4 });
-  grow(w, 6);
+  // The second may share the corridor as a parallel lane (cheaper) but never its centreline.
+  let laned = 0;
+  for (const seed of [4, 5, 6, 7]) {
+    const w = createWorld({ seed });
+    grow(w, 6);
+    const built = [...w.placements.values()].filter((p) => p.state === 'built');
+    const res1 = w.findRoutes(built[0].title, built[built.length - 1].title);
+    w.commitRoute(res1.cheap);
+    const res2 = w.findRoutes(built[0].title, built[built.length - 1].title);
+    checkPair(res2);
+    checkRoute(w, res2.cheap, w.terrainAt);
+    const st = new Set(built.map((p) => hexKey(p.q, p.r)));
+    const m = measureNetwork([res1.cheap, res2.cheap], st);
+    assert.equal(m.stacked, 0);
+    assert.equal(m.atGrade, 0);
+    if (res2.cheap.hexes.some((h) => h.lane)) laned++;
+  }
+  assert.ok(laned >= 2, `only ${laned}/4 second tracks used the corridor`);
+});
+
+// ---- shared corridors and crossings over grown networks ---------------------------
+
+const NETS = (() => {
+  const out = [];
+  for (let seed = 1; seed <= 16; seed++) {
+    const { world, results, built } = simulate(seed, 15);
+    const st = new Set(built.map((t) => { const p = world.placements.get(t); return hexKey(p.q, p.r); }));
+    const routes = results.map((r) => r.cheap);
+    out.push({ seed, world, routes, st, m: measureNetwork(routes, st) });
+  }
+  return out;
+})();
+
+test('tracks: no shared centrelines outside stations, no at-grade crossings, clearance kept', () => {
+  for (const { seed, m } of NETS) {
+    assert.equal(m.stacked, 0, `seed ${seed}: ${m.stacked} hexes on another track's centreline`);
+    assert.equal(m.atGrade, 0, `seed ${seed}: ${m.atGrade} crossings at grade`);
+    if (m.crossings) assert.ok(m.minClear >= WORLD.crossingClearance - 1e-6, `seed ${seed}: clearance ${m.minClear}`);
+    assert.ok(m.minDist >= 0.8 * WORLD.laneSpacing, `seed ${seed}: tracks ${m.minDist.toFixed(3)} apart`);
+  }
+  const sum = (k) => NETS.reduce((a, n) => a + n.m[k], 0);
+  assert.ok(sum('laneRoutes') >= NETS.length * 3, `only ${sum('laneRoutes')} routes share a corridor`);
+  assert.ok(sum('over') > 0 && sum('under') > 0, 'crossings go over and under');
+});
+
+test('tracks: committed routes keep every route rule (smooth through joins and splits, lane cost, cap)', () => {
+  let joins = 0;
+  for (const { world, routes } of NETS) {
+    for (const r of routes) {
+      checkRoute(world, r, world.terrainAt); // includes the kink test through lane joins and splits
+      for (let i = 1; i < r.hexes.length - 1; i++) if (!r.hexes[i - 1].lane && r.hexes[i].lane) joins++;
+      // per hex: one track per lane
+    }
+    const lanes = new Map();
+    for (const r of routes) for (const h of r.hexes) {
+      if (!h.lane) continue;
+      const k = `${h.q},${h.r},${h.lane}`;
+      assert.ok(!lanes.has(k), `two tracks in lane ${h.lane} of ${h.q},${h.r}`);
+      lanes.set(k, 1);
+    }
+  }
+  assert.ok(joins > 20, `only ${joins} lane joins`);
+});
+
+test('tracks: lanes run parallel at whole lane spacings, round curves too', () => {
+  let curved = 0, checked = 0;
+  for (const { routes, st } of NETS) {
+    routes.forEach((r, ri) => {
+      for (let i = 0; i + 1 < r.hexes.length; i++) {
+        const a = r.hexes[i], b = r.hexes[i + 1];
+        if (!a.lane || b.lane !== a.lane) continue;
+        const seg = r.points.slice(i * 8, i * 8 + 9);
+        const h0 = Math.atan2(seg[1].z - seg[0].z, seg[1].x - seg[0].x), h1 = Math.atan2(seg[8].z - seg[7].z, seg[8].x - seg[7].x);
+        let turn = Math.abs(h1 - h0); if (turn > Math.PI) turn = 2 * Math.PI - turn;
+        for (const p of seg.slice(2, 7)) {
+          const hh = worldToHex(p.x, p.z);
+          if (st.has(hexKey(hh.q, hh.r))) continue;
+          let best = Infinity; // horizontal distance to the nearest other track
+          routes.forEach((o, oi) => {
+            if (oi === ri) return;
+            for (let k = 0; k + 1 < o.points.length; k++) {
+              const u = o.points[k], v = o.points[k + 1];
+              if (Math.abs(u.y - p.y) > 0.3) continue; // a crossing track high above or below
+              const vx = v.x - u.x, vz = v.z - u.z, L2 = vx * vx + vz * vz;
+              const t = Math.max(0, Math.min(1, ((p.x - u.x) * vx + (p.z - u.z) * vz) / (L2 || 1)));
+              best = Math.min(best, Math.hypot(p.x - u.x - t * vx, p.z - u.z - t * vz));
+            }
+          });
+          const n = best / WORLD.laneSpacing;
+          assert.ok(Math.abs(n - Math.round(n)) < 0.06 && Math.round(n) >= 1, `lane track ${best.toFixed(3)} from its neighbour`);
+          checked++;
+        }
+        if (turn > (20 * Math.PI) / 180) curved++;
+      }
+    });
+  }
+  assert.ok(checked > 200, `only ${checked} lane points checked`);
+  assert.ok(curved > 0, 'no lane ran round a curve');
+});
+
+test('tracks: corridor lanes never exceed the cap; full corridors take no more track', () => {
+  // build the same pair again and again: lanes fill up to the cap, then track goes elsewhere
+  const w = createWorld({ seed: 11 });
+  grow(w, 4);
   const built = [...w.placements.values()].filter((p) => p.state === 'built');
-  const res1 = w.findRoutes(built[0].title, built[built.length - 1].title);
-  w.commitRoute(res1.cheap);
-  const res2 = w.findRoutes(built[0].title, built[built.length - 1].title);
-  assert.ok(res2.cheap.cost >= res1.cheap.cost, 'committed track does not change construction cost');
-  checkPair(res2);
+  const routes = [];
+  for (let k = 0; k < 7; k++) {
+    const res = w.findRoutes(built[0].title, built[1].title);
+    checkRoute(w, res.cheap, w.terrainAt);
+    w.commitRoute(res.cheap);
+    routes.push(res.cheap);
+  }
+  const per = new Map();
+  for (const r of routes) for (const h of r.hexes.slice(1, -1)) {
+    const k = `${h.q},${h.r}`;
+    if (!per.has(k)) per.set(k, []);
+    per.get(k).push(h);
+  }
+  for (const [k, hs] of per) {
+    const lanes = hs.filter((h) => h.lane).map((h) => h.lane);
+    assert.equal(new Set(lanes).size, lanes.length, `hex ${k}: lane used twice`);
+    assert.ok(lanes.every((l) => Math.abs(l) <= WORLD.maxLanesPerSide), `hex ${k}: ${lanes}`);
+    assert.ok(hs.filter((h) => !h.lane && !h.over && !h.under).length <= 1, `hex ${k}: two centrelines`);
+  }
+  assert.ok(routes.some((r) => r.hexes.some((h) => h.lane)), 'repeat tracks share the corridor');
+  const st = new Set(built.map((p) => hexKey(p.q, p.r)));
+  const m = measureNetwork(routes, st);
+  assert.equal(m.stacked, 0); assert.equal(m.atGrade, 0);
+  assert.ok(m.minDist >= 0.8 * WORLD.laneSpacing, `${m.minDist}`);
+});
+
+test('tracks: lane hexes cost laneCostFactor of their price', () => {
+  let saw = 0;
+  for (const { routes } of NETS) for (const r of routes) {
+    const full = r.hexes.reduce((s, h) => s + ECON.trackCostPerHex[h.kind], 0);
+    const lanes = r.hexes.filter((h) => h.lane);
+    if (!lanes.length) continue;
+    const saved = lanes.reduce((s, h) => s + ECON.trackCostPerHex[h.kind] * (1 - WORLD.laneCostFactor), 0);
+    assert.equal(r.cost, Math.round(full - saved));
+    saw++;
+  }
+  assert.ok(saw > 0);
+});
+
+test('tracks: determinism of grown networks with corridors and crossings', () => {
+  const a = simulate(5, 15), b = simulate(5, 15);
+  assert.deepEqual(a.results.map((r) => r.cheap), b.results.map((r) => r.cheap));
+  assert.deepEqual(a.results.map((r) => r.direct), b.results.map((r) => r.direct));
 });
 
 // ---- drama: ordinary links cross dramatic land -------------------------------------

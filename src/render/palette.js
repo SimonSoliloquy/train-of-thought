@@ -34,6 +34,7 @@ export const TRACK_COLORS = {
   pier: '#a8a196',
   pierDark: '#8a8378',
   wall: '#b9ab92',
+  embank: '#8c7d5a',
   wallCap: '#d6cbb5',
   portal: '#b7ab97',
   portalDark: '#141414',

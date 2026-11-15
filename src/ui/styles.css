@@ -1,0 +1,341 @@
+/* Train of Thought UI. Dark translucent panels, enamel-sign headers, departure-board numerals. */
+
+.tot {
+  --panel: rgba(12, 16, 24, 0.86);
+  --panel-2: rgba(255, 255, 255, 0.05);
+  --edge: rgba(255, 255, 255, 0.13);
+  --ink: #ece8dc;
+  --dim: #a09d92;
+  --faint: #6f6e68;
+  --amber: #ffbf3f;
+  --green: #7fdc92;
+  --red: #ff6e60;
+  --blue: #6db3ff;
+  --sign: #17407a;
+  --ticket: #f3ecd8;
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  color: var(--ink);
+  font: 13px/1.35 var(--sans);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+.tot *, .tot *::before, .tot *::after { box-sizing: border-box; }
+.tot [hidden] { display: none !important; }
+.tot h1, .tot h2, .tot h3, .tot p, .tot ul, .tot dl, .tot dd { margin: 0; padding: 0; }
+.tot ul { list-style: none; }
+.tot button, .tot input, .tot select { font: inherit; color: inherit; }
+.tot button { cursor: pointer; }
+.tot button:disabled { cursor: default; }
+.tot :focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+
+.tot-panel {
+  pointer-events: auto;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+/* hide the game panels until there is a game */
+.tot[data-phase='idle'] > :not(.tot-screens),
+.tot[data-phase='loading'] > :not(.tot-screens) { display: none; }
+.tot[data-phase='over'] > :not(.tot-screens) { filter: saturate(0.5); opacity: 0.55; pointer-events: none; }
+.tot[data-phase='over'] .tot-panel { pointer-events: none; }
+
+.tot-k { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+.tot-eyebrow { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.8; }
+.tot-count { font: 600 11px var(--mono); color: var(--dim); }
+.tot-empty { padding: 10px 12px; color: var(--dim); font-size: 12px; }
+.tot-note { font-size: 11.5px; color: var(--dim); }
+.tot-note.bad { color: var(--red); }
+
+/* ---------------------------------------------------------------- buttons */
+.tot-btn {
+  border: 1px solid var(--edge);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  padding: 5px 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.tot-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
+.tot-btn:disabled, .tot-btn.poor { opacity: 0.45; }
+.tot-btn-small { padding: 3px 8px; font-size: 12px; }
+.tot-btn-primary { background: var(--amber); color: #1a1405; border-color: #e0a52b; font-weight: 700; }
+.tot-btn-primary:hover:not(:disabled) { background: #ffcd66; }
+.tot-btn-big { padding: 11px 28px; font-size: 16px; letter-spacing: 0.04em; }
+.tot-btn.armed { background: var(--red); color: #1a0a08; border-color: var(--red); }
+.tot-btn.on { background: var(--blue); color: #06101c; border-color: var(--blue); }
+.tot-iconbtn {
+  width: 22px; height: 22px; padding: 0; line-height: 1;
+  border: 0; border-radius: 4px; background: transparent; color: var(--dim); font-size: 16px;
+}
+.tot-iconbtn:hover { background: rgba(255, 255, 255, 0.14); color: var(--ink); }
+
+/* ---------------------------------------------------------------- HUD */
+.tot-hud {
+  position: absolute; top: 8px; left: 12px; right: 12px; height: 54px;
+  display: flex; align-items: center; gap: 4px; padding: 0 10px;
+}
+.tot-brand { display: flex; align-items: center; gap: 8px; margin-right: 10px; white-space: nowrap; }
+.tot-brand-mark { width: 10px; height: 10px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 3px rgba(255, 191, 63, 0.25); }
+.tot-brand-name { font-weight: 700; letter-spacing: 0.02em; }
+.tot-cell { padding: 0 10px; border-left: 1px solid var(--edge); min-width: 0; }
+.tot-cell .tot-v { font: 700 17px/1.15 var(--mono); }
+.tot-cell .tot-sub { font-size: 10.5px; color: var(--dim); white-space: nowrap; min-height: 13px; }
+.tot-cell-money { min-width: 112px; }
+.tot-cell-money.neg .tot-v, .tot-cell-money.neg .tot-sub { color: var(--red); }
+.tot-cell-net { min-width: 150px; }
+.tot-cell-net .tot-v { color: var(--green); }
+.tot-cell-net.neg .tot-v { color: var(--red); }
+.tot-cell-links { flex: 1 1 140px; min-width: 130px; max-width: 240px; }
+.tot-cell-links .tot-v { font-size: 14px; }
+.tot-speeds { margin-left: auto; display: flex; gap: 3px; padding-left: 10px; border-left: 1px solid var(--edge); }
+.tot-speed {
+  min-width: 34px; height: 28px; padding: 0 6px; border: 1px solid var(--edge); border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06); font: 700 12px var(--mono); letter-spacing: 0.05em;
+}
+.tot-speed:hover { background: rgba(255, 255, 255, 0.15); }
+.tot-speed.on { background: var(--amber); color: #1a1405; border-color: #e0a52b; }
+
+.tot-bar { height: 5px; margin: 3px 0 2px; border-radius: 3px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+.tot-bar-fill { height: 100%; width: 0; border-radius: 3px; background: var(--blue); }
+.tot-bar-fill.ok { background: var(--green); }
+.tot-bar-fill.warn { background: var(--amber); }
+.tot-bar-fill.bad { background: var(--red); }
+
+/* ---------------------------------------------------------------- layout */
+.tot-stack {
+  position: absolute; top: 70px; left: 12px; right: 12px; bottom: 12px;
+  display: flex; flex-direction: column; gap: 10px; pointer-events: none;
+}
+.tot-mid { flex: 1 1 auto; min-height: 0; position: relative; pointer-events: none; }
+.tot-panel-head { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; border-bottom: 1px solid var(--edge); }
+.tot-panel-head h2 { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); flex: 0 0 auto; }
+.tot-panel-head .tot-count { margin-right: auto; }
+
+/* ---------------------------------------------------------------- thought board */
+.tot-board { position: absolute; left: 0; top: 0; width: 304px; max-height: 100%; display: flex; flex-direction: column; }
+.tot-board-body { overflow-y: auto; min-height: 0; }
+.tot-board.collapsed .tot-board-body { display: none; }
+.tot-trow { padding: 7px 12px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); cursor: pointer; }
+.tot-trow:hover { background: rgba(255, 255, 255, 0.06); }
+.tot-trow-top { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.tot-mark {
+  flex: none; font: 700 9.5px var(--mono); letter-spacing: 0.08em; padding: 1px 4px; border-radius: 3px;
+  background: rgba(255, 191, 63, 0.16); color: var(--amber);
+}
+.tot-mark.riding { background: rgba(127, 220, 146, 0.18); color: var(--green); }
+.tot-from { color: var(--dim); max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tot-arrow { color: var(--faint); flex: none; }
+.tot-to {
+  flex: 1 1 auto; min-width: 0; text-align: left; border: 0; background: none; padding: 0;
+  color: var(--amber); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tot-to:hover { text-decoration: underline; }
+.tot-to.off { color: #d9c9a0; cursor: default; font-weight: 600; text-decoration: none; }
+.tot-trow-desc { margin: 2px 0 4px; font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 15px; }
+.tot-trow-foot { display: flex; align-items: center; gap: 8px; }
+.tot-fare { flex: none; min-width: 42px; font: 700 13px var(--mono); color: var(--amber); }
+.tot-bar-patience { flex: 1 1 auto; margin: 0; }
+
+.tot-chip {
+  flex: none; font-size: 10px; padding: 1px 6px; border-radius: 9px; white-space: nowrap;
+  border: 1px solid var(--edge); color: var(--dim);
+}
+.tot-chip-built { color: var(--green); border-color: rgba(127, 220, 146, 0.5); background: rgba(127, 220, 146, 0.1); }
+.tot-chip-ghost { color: var(--blue); border-color: rgba(109, 179, 255, 0.5); background: rgba(109, 179, 255, 0.1); }
+.tot-chip-absent { color: var(--faint); border-style: dashed; }
+.tot-more { padding: 6px 12px; font-size: 11px; color: var(--faint); }
+
+/* ---------------------------------------------------------------- right card */
+.tot-card { position: absolute; right: 0; top: 0; width: 352px; max-height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.tot-sign {
+  position: relative; flex: none; display: flex; gap: 10px; align-items: flex-start; margin: 8px 8px 0; padding: 10px 30px 10px 12px;
+  background: var(--sign); color: #fff; border-radius: 5px;
+  box-shadow: inset 0 0 0 2px var(--sign), inset 0 0 0 3.5px rgba(255, 255, 255, 0.9);
+}
+.tot-sign.ghost { background: #1b2230; box-shadow: inset 0 0 0 2px #1b2230, inset 0 0 0 3.5px rgba(255, 255, 255, 0.55); }
+.tot-sign.ghost h2 { color: #dfe8f5; }
+.tot-sign-text { min-width: 0; }
+.tot-sign h2 { font-size: 16px; line-height: 1.2; overflow-wrap: anywhere; }
+.tot-desc { font-size: 11.5px; opacity: 0.85; margin-top: 2px; overflow-wrap: anywhere; }
+.tot-close { position: absolute; top: 7px; right: 7px; color: rgba(255, 255, 255, 0.8); }
+.tot-thumb { flex: none; width: 52px; height: 52px; border-radius: 4px; overflow: hidden; background: rgba(255, 255, 255, 0.15); }
+.tot-thumb.empty { display: none; }
+.tot-thumb-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tot-hero { flex: none; height: 150px; background: #0e1118; overflow: hidden; }
+.tot-hero.empty { display: none; }
+.tot-hero-img { width: 100%; height: 100%; object-fit: cover; object-position: center 25%; display: block; }
+.tot-card-scroll { flex: 0 1 auto; min-height: 0; max-height: 44%; overflow-y: auto; padding: 8px 12px 6px; }
+.tot-card-scroll.grow { max-height: none; flex: 1 1 auto; }
+.tot-summary { font-size: 12px; color: #d8d4c6; max-height: 9.6em; overflow-y: auto; user-select: text; margin-bottom: 6px; }
+.tot-wiki { display: inline-block; font-size: 12px; color: var(--blue); text-decoration: none; margin-bottom: 8px; }
+.tot-wiki:hover { text-decoration: underline; }
+.tot-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.tot-stat { background: var(--panel-2); border-radius: 5px; padding: 4px 8px; }
+.tot-stat b { display: block; font: 700 14px var(--mono); }
+.tot-stats.two { grid-template-columns: repeat(2, 1fr); margin-top: 8px; }
+.tot-quote { font: italic 500 15px/1.4 Georgia, 'Times New Roman', serif; color: #f4efdf; margin: 4px 0 2px; user-select: text; }
+.tot-quote.warn { color: var(--amber); }
+.tot-quote.bad { color: var(--red); }
+.tot-quote.good { color: var(--green); }
+.tot-patience-k { margin-top: 10px; }
+.tot-bar-big { height: 8px; border-radius: 4px; }
+.tot-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 6px; }
+.tot-links-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--edge); }
+.tot-links-head h3 { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); }
+.tot-filter {
+  flex: 1 1 auto; min-width: 0; margin-left: auto; background: rgba(0, 0, 0, 0.3); border: 1px solid var(--edge);
+  border-radius: 5px; padding: 4px 8px; user-select: text;
+}
+.tot-filter::placeholder { color: var(--faint); }
+.tot-links { flex: 1 1 130px; min-height: 96px; overflow-y: auto; padding-bottom: 6px; }
+.tot-linkrow { display: flex; align-items: center; gap: 4px; padding-right: 8px; }
+.tot-linkrow.lead { background: rgba(255, 191, 63, 0.05); }
+.tot-linkrow.first-rest { border-top: 1px solid var(--edge); }
+.tot-linkbtn {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left;
+  padding: 4px 4px 4px 12px; border: 0; background: none;
+}
+.tot-linkbtn:hover { background: rgba(255, 255, 255, 0.08); }
+.tot-linkbtn.busy { opacity: 0.5; cursor: progress; }
+.tot-leadmark { flex: none; width: 10px; font-size: 8px; color: var(--amber); }
+.tot-linkname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tot-linkrow .tot-empty { padding: 8px 12px; }
+
+.tot-badges { margin-bottom: 6px; }
+.tot-badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--edge); }
+.tot-badge.premium { background: rgba(255, 110, 96, 0.14); border-color: rgba(255, 110, 96, 0.55); color: #ffb3aa; font-weight: 600; }
+
+/* ---------------------------------------------------------------- build panel */
+.tot-build { margin-top: 8px; }
+.tot-build h3 { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
+.tot-from-pick { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+.tot-select { background: rgba(0, 0, 0, 0.35); border: 1px solid var(--edge); border-radius: 5px; padding: 4px 6px; width: 100%; }
+.tot-from-one { font-size: 13px; }
+.tot-quotes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tot-quotes.single { grid-template-columns: 1fr; }
+.tot-quote {
+  text-align: left; display: flex; flex-direction: column; gap: 5px; padding: 8px 9px;
+  border: 1px solid var(--edge); border-radius: 6px; background: rgba(255, 255, 255, 0.04);
+}
+.tot-quote:hover { background: rgba(255, 255, 255, 0.09); }
+.tot-quote.chosen { border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber) inset; background: rgba(255, 191, 63, 0.08); }
+.tot-qhead strong { display: block; font-size: 13px; }
+.tot-qhead span { font-size: 10.5px; color: var(--dim); }
+.tot-qrows { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; font-size: 11.5px; }
+.tot-qrows dt { color: var(--dim); }
+.tot-qrows dd { text-align: right; }
+.tot-qfoot { display: flex; justify-content: space-between; align-items: baseline; border-top: 1px dashed var(--edge); padding-top: 4px; font-weight: 700; }
+.tot-qtotal { font: 700 15px var(--mono); color: var(--amber); }
+.tot-quote.poor .tot-qtotal { color: var(--red); }
+.tot-qpoor { font-size: 10.5px; color: var(--red); }
+.tot-buildrow { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.tot-buildbtn { min-width: 130px; padding: 8px 14px; }
+
+/* ---------------------------------------------------------------- lines panel */
+.tot-lines { flex: none; align-self: flex-start; max-width: 100%; display: flex; flex-direction: column; }
+.tot-lines .tot-panel-head { gap: 10px; }
+.tot-lines .tot-panel-head h2 { margin-right: auto; }
+.tot-lines.collapsed .tot-lines-row { display: none; }
+.tot-lines-row { display: flex; gap: 8px; padding: 8px; overflow-x: auto; max-height: 190px; align-items: stretch; }
+.tot-lines-row > .tot-empty { padding: 4px 6px; max-width: 420px; }
+.tot-line {
+  flex: 0 0 262px; display: flex; flex-direction: column; gap: 5px; padding: 8px 9px; overflow-y: auto;
+  background: var(--panel-2); border: 1px solid var(--edge); border-radius: 6px;
+}
+.tot-line:hover { border-color: rgba(255, 255, 255, 0.35); }
+.tot-line-head { display: flex; align-items: center; gap: 6px; }
+.tot-swatch { flex: none; width: 14px; height: 14px; border-radius: 3px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4); }
+.tot-line-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tot-chain { font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tot-trains { display: flex; flex-direction: column; gap: 3px; }
+.tot-train { display: flex; align-items: center; gap: 6px; padding: 1px 2px; border-radius: 4px; }
+.tot-train.flash { background: rgba(109, 179, 255, 0.3); }
+.tot-train-name { flex: 1 1 auto; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tot-pax { font: 600 11px var(--mono); color: var(--dim); }
+.tot-train-none { font-size: 11.5px; color: var(--faint); }
+.tot-buys { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; }
+.tot-price { font-family: var(--mono); color: var(--amber); }
+
+/* ---------------------------------------------------------------- notes stack (top centre) */
+.tot-notes {
+  position: absolute; top: 70px; left: 50%; transform: translateX(-50%);
+  width: clamp(280px, calc(100vw - 720px), 480px); display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+}
+.tot-banner { padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; border-color: var(--amber); }
+.tot-banner-head { display: flex; flex-direction: column; font-size: 12px; color: var(--dim); }
+.tot-banner-head strong { color: var(--ink); font-size: 13px; }
+.tot-banner .tot-chain { color: var(--ink); white-space: normal; overflow-wrap: anywhere; }
+.tot-banner-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.tot-ridebar { display: flex; align-items: center; gap: 10px; padding: 6px 10px; }
+.tot-ridebar span:nth-child(2) { flex: 1 1 auto; font-weight: 600; }
+.tot-hint { display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 12px; border-left: 3px solid var(--amber); }
+.tot-hint > span:nth-child(2) { flex: 1 1 auto; }
+.tot-hint .tot-eyebrow { color: var(--amber); }
+.tot-toasts { display: flex; flex-direction: column; gap: 6px; }
+.tot-toast {
+  pointer-events: auto; cursor: pointer; padding: 8px 12px; border-radius: 6px; font-size: 12.5px;
+  background: rgba(14, 19, 28, 0.94); border: 1px solid var(--edge); border-left: 4px solid var(--blue);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4); animation: tot-in 0.18s ease-out;
+}
+.tot-toast.good { border-left-color: var(--green); }
+.tot-toast.bad { border-left-color: var(--red); }
+.tot-toast.milestone {
+  display: flex; flex-direction: column; gap: 1px; border-left-color: var(--amber);
+  background: linear-gradient(90deg, rgba(255, 191, 63, 0.2), rgba(14, 19, 28, 0.94) 60%);
+}
+.tot-toast.milestone strong { font-size: 14px; color: var(--amber); }
+.tot-toast.milestone span { font-size: 11.5px; color: var(--dim); }
+@keyframes tot-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+
+/* while drawing a line the map is the point: soften the cards */
+.tot.drawing .tot-board { opacity: 0.7; }
+
+/* ---------------------------------------------------------------- screens */
+.tot-screens { position: absolute; inset: 0; pointer-events: none; }
+.tot-overlay {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: auto;
+  background: radial-gradient(ellipse at center, rgba(8, 11, 18, 0.55), rgba(8, 11, 18, 0.88));
+}
+.tot-start { width: min(480px, calc(100% - 32px)); padding: 28px 30px 30px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.tot-start-sign {
+  display: flex; align-items: center; gap: 12px; padding: 12px 22px; background: var(--sign); color: #fff; border-radius: 6px;
+  box-shadow: inset 0 0 0 2px var(--sign), inset 0 0 0 4px rgba(255, 255, 255, 0.92);
+}
+.tot-start-dot { width: 12px; height: 12px; border-radius: 50%; background: #fff; }
+.tot-start h1 { font-size: 26px; letter-spacing: 0.02em; }
+.tot-pitch { color: #d3cfc2; font-size: 14px; line-height: 1.5; }
+.tot-loading { display: flex; align-items: center; gap: 10px; color: var(--amber); font-size: 15px; padding: 10px 0; }
+.tot-spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255, 191, 63, 0.3); border-top-color: var(--amber); animation: tot-spin 0.8s linear infinite; }
+@keyframes tot-spin { to { transform: rotate(360deg); } }
+.tot-over h1 { font-size: 30px; color: var(--red); }
+.tot-over .tot-eyebrow { color: var(--dim); }
+.tot-over-score { display: flex; flex-direction: column; align-items: center; }
+.tot-over-score b { font: 700 46px/1.1 var(--mono); color: var(--amber); }
+.tot-over-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: 100%; }
+.tot-over-stat { background: var(--panel-2); border-radius: 6px; padding: 8px 6px; display: flex; flex-direction: column; gap: 2px; }
+.tot-over-stat b { font: 700 17px var(--mono); }
+
+/* ---------------------------------------------------------------- tighter fit */
+@media (max-height: 760px), (max-width: 1240px) {
+  .tot-board { width: 280px; }
+  .tot-card { width: 328px; }
+  .tot-lines-row { max-height: 156px; }
+  .tot-cell { padding: 0 8px; }
+  .tot-cell-net { min-width: 140px; }
+  .tot-brand-name { font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tot-toast, .tot-spinner { animation: none; }
+}

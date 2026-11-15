@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Train of Thought: UI demo (mock game)</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #2d5a3d; font-family: system-ui, sans-serif; }
+      #view {
+        position: fixed; inset: 0 0 64px 0;
+        background:
+          radial-gradient(ellipse at 30% 70%, #6fa3c9 0 12%, transparent 13%),
+          radial-gradient(ellipse at 75% 30%, #8a7f6a 0 10%, transparent 11%),
+          linear-gradient(160deg, #5f9a52, #3d7a4a 50%, #8fb36a);
+      }
+      #map { position: absolute; inset: 0; }
+      #ui { position: fixed; inset: 0 0 64px 0; pointer-events: none; }
+      #dock { position: fixed; left: 0; right: 0; bottom: 0; height: 64px; background: #0b0e14; color: #cfd3da; font-size: 12px; display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 0 10px; box-sizing: border-box; }
+      #bar { display: flex; gap: 5px; align-items: center; overflow-x: auto; white-space: nowrap; }
+      #bar button { font: inherit; padding: 2px 8px; border: 1px solid #39414f; background: #171c26; color: #e8e6df; border-radius: 4px; cursor: pointer; }
+      #bar button:hover { background: #232a38; }
+      #bar .dbg { border-style: dashed; }
+      #bar .sp { flex: 1; }
+      #log { font-family: ui-monospace, Menlo, monospace; color: #8a93a3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    </style>
+  </head>
+  <body>
+    <div id="view"><div id="map"></div></div>
+    <div id="ui"></div>
+    <div id="dock"><div id="bar"></div><div id="log"></div></div>
+    <script type="module" src="/src/ui/demo.js"></script>
+  </body>
+</html>

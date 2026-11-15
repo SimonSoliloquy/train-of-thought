@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Train of Thought · render demo</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #10141c; }
+      #view { position: fixed; inset: 0; }
+      #ui { position: fixed; inset: 0; pointer-events: none; font: 12px/1.4 ui-monospace, Menlo, monospace; color: #1d2430; }
+      .panel { position: absolute; left: 12px; top: 12px; pointer-events: auto; background: rgba(255,255,255,.82);
+        padding: 10px 12px; border-radius: 10px; box-shadow: 0 4px 18px rgba(0,0,0,.15); max-width: 360px; }
+      .panel b { font-family: system-ui, sans-serif; }
+      #log { margin-top: 6px; color: #3b4658; }
+      #fps { position: absolute; right: 12px; top: 12px; background: rgba(255,255,255,.8); padding: 4px 8px; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <div id="view"></div>
+    <div id="ui">
+      <div class="panel">
+        <b>Render demo</b> (mock world)<br />
+        drag: pan · right-drag: orbit · wheel: zoom · click: pick<br />
+        F follow next train · L line highlight · P preview style · X preview on/off<br />
+        G focus a ghost · R reveal more · B big reveal (perf) · Space pause · Esc reset<br />
+        <span style="opacity:.7">?big=37 draws ~4,200 tiles at load</span>
+        <div id="log"></div>
+      </div>
+      <div id="fps"></div>
+    </div>
+    <script type="module" src="/src/render/demo.js"></script>
+  </body>
+</html>

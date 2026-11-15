@@ -239,7 +239,8 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     state.tracks.push(track);
     tracksById.set(track.id, track);
     trackByPair.set(pairKey(route.from, route.to), track);
-    trackHexTotal += route.hexes.length;
+    // Rails that were already there (shared stretches) cost nothing more to keep up.
+    trackHexTotal += route.hexes.filter((h) => !h.shared).length;
     return track;
   }
 
@@ -812,15 +813,25 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
   let pendingTickets = 0;
   let ticketGap = 2; // seconds until the next ticket may be drawn
   const ticketBase = new Map(); // ticket id -> full reward when issued
+  const ticketPaths = new Map(); // ticket id -> the chain of articles it was drawn along (the surveyor's map)
+  const surveyorCost = () => Math.round(ECON.surveyorCost * state.inflation);
 
   function removeTicket(t) {
     const i = state.tickets.indexOf(t);
     if (i >= 0) state.tickets.splice(i, 1);
     ticketBase.delete(t.id);
+    ticketPaths.delete(t.id);
   }
 
   /** A ticket is met the moment both ends are stations joined by track. Paid at once. */
   function checkTickets() {
+    // A surveyor's advice is used up once the station it pointed at exists.
+    for (const t of state.tickets) {
+      if (t.hint && state.stations.has(t.hint.to)) {
+        t.hint = null;
+        emit('ticketHint', { ticket: t, hint: null });
+      }
+    }
     let any = false;
     for (const t of [...state.tickets]) {
       if (!state.stations.has(t.from) || !state.stations.has(t.to)) continue;
@@ -836,11 +847,12 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     if (any) checkGoal();
   }
 
-  function addTicket(from, to, fromDescription, toDescription, links) {
+  function addTicket(from, to, fromDescription, toDescription, links, path = null) {
     const base = (ECON.ticketBase + ECON.ticketPerLink * links) * state.inflation;
     const timeMax = ECON.ticketSecondsBase + ECON.ticketSecondsPerLink * links;
-    const t = { id: nextTicketId++, from, to, fromDescription, toDescription, links, reward: Math.round(base), time: timeMax, timeMax };
+    const t = { id: nextTicketId++, from, to, fromDescription, toDescription, links, reward: Math.round(base), time: timeMax, timeMax, surveyCost: surveyorCost(), hint: null };
     ticketBase.set(t.id, base);
+    if (Array.isArray(path) && path.length >= 2) ticketPaths.set(t.id, path.slice());
     state.tickets.push(t);
     ticketsIssued++;
     emit('ticketAdded', { ticket: t });
@@ -877,6 +889,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
         const anchor = built[Math.floor(r() * built.length)];
         const bothNew = state.stations.size >= 2 && k >= 2 && r() < 0.3;
         const visited = new Set([anchor.title]);
+        const path = [anchor.title];
         let from = anchor.title;
         let fromDescription = anchor.article.description || '';
         let cur = anchor.article;
@@ -885,6 +898,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
           const first = await stepOut(cur, visited, taken, r);
           if (!first) continue;
           from = first.title;
+          path.push(first.title);
           fromDescription = first.stub.description || '';
           links = 1;
           try { cur = await loadArticle(first.title); } catch { continue; }
@@ -895,6 +909,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
           const next = await stepOut(cur, visited, taken, r);
           if (!next) break;
           last = next;
+          path.push(next.title);
           links++;
           if (i < steps - 1) {
             try { cur = await loadArticle(next.title); } catch { break; }
@@ -904,7 +919,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
         if (state.phase !== 'running' || state.tickets.length >= ECON.maxTickets) return;
         if (state.stations.has(last.title) || (bothNew && state.stations.has(from))) continue;
         if (state.tickets.some((t) => t.to === last.title || t.from === last.title)) continue;
-        addTicket(from, last.title, fromDescription, last.stub.description || '', links);
+        addTicket(from, last.title, fromDescription, last.stub.description || '', links, path);
         return;
       }
     } catch {
@@ -914,7 +929,47 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     }
   }
 
+  /**
+   * Buy a surveyor for one ticket: for a fee, they point out the next article to build on a route
+   * that reaches the ticket's destination, and which of your stations to build it from.
+   * One purchase shows one step; once that station is built, another can be bought.
+   */
+  async function buySurveyor(ticketId) {
+    if (state.phase !== 'running') return fail('The game is not running.');
+    const t = state.tickets.find((x) => x.id === ticketId);
+    if (!t) return fail('That ticket is gone.');
+    if (t.hint) return { ok: true, hint: t.hint };
+    const path = ticketPaths.get(t.id);
+    if (!path) return fail('The surveyor has no map for this ticket.');
+    let i = -1;
+    for (let k = 0; k < path.length; k++) if (state.stations.has(path[k])) i = k;
+    if (i < 0 || i >= path.length - 1) return fail('There is nothing left to survey for this ticket.');
+    const cost = surveyorCost();
+    if (state.money < cost) return fail(`Not enough gold: a surveyor costs ${cost} gold.`);
+    const from = path[i];
+    const to = path[i + 1];
+    state.money -= cost;
+    if (!world.placements.has(to)) {
+      let res;
+      try {
+        res = await survey(from, to);
+      } catch {
+        res = { ok: false };
+      }
+      if (!res || !res.ok) {
+        state.money += cost;
+        return fail('The surveyor could not find the way. Nothing was charged.');
+      }
+    }
+    if (!state.tickets.includes(t)) { state.money += cost; return fail('That ticket is gone.'); }
+    t.hint = { from, to };
+    emit('ticketHint', { ticket: t, hint: t.hint });
+    return { ok: true, hint: t.hint };
+  }
+
   function tickTickets(h, frozen = false) {
+    const cost = surveyorCost();
+    for (const t of state.tickets) t.surveyCost = cost;
     for (const t of frozen ? [] : [...state.tickets]) {
       t.time = Math.max(0, t.time - h);
       t.reward = Math.round(liveFare(ticketBase.get(t.id), t.time, t.timeMax));
@@ -1038,6 +1093,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     survey,
     quoteUpgrade,
     upgradeTrack,
+    buySurveyor,
     trackBetween,
     // Not part of the contract: hooks for tests and the balance bot.
     _debug: { addThought, addTicket, router, nav },

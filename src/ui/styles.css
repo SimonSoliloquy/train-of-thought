@@ -156,6 +156,13 @@
 .tot-tk-reward { flex: none; font: 700 12px var(--mono); color: var(--green); }
 .tot-tk-how { font-size: 11px; color: var(--dim); }
 .tot-tk-bar { height: 3px; margin: 4px 0 0; }
+.tot .tot-tk-survey {
+  margin: 5px 0 1px; padding: 3px 9px; border: 1px solid #e0a52b; border-radius: 5px; background: rgba(255, 191, 63, 0.16);
+  color: var(--amber); font: 700 11.5px/1.2 inherit; font-family: inherit; cursor: pointer;
+}
+.tot .tot-tk-survey:hover { background: var(--amber); color: #1a1405; }
+.tot .tot-tk-survey.poor { opacity: 0.5; }
+.tot-tk-hint { margin-top: 4px; padding: 3px 7px; border-radius: 4px; background: rgba(255, 191, 63, 0.9); color: #1a1405; font-size: 11.5px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
 .tot-ticket.done { border-left-color: var(--green); background: rgba(70, 170, 100, 0.55); }
 
 /* ---------------------------------------------------------------- link list (right edge, only with a station selected) */
@@ -300,3 +307,32 @@
 @media (prefers-reduced-motion: reduce) {
   .tot-toast, .tot-spinner, .tot-last.flash .tot-last-amt, .tot-gold-v.flash, .tot-goal.celebrate { animation: none; }
 }
+
+/* ---------------------------------------------------------------- first-visit question and tour */
+.tot-splash { position: absolute; inset: 0; z-index: 9; display: grid; place-items: center; background: rgba(8, 12, 20, 0.55); pointer-events: auto; padding: 16px; }
+.tot-splash[hidden] { display: none; }
+.tot-splash-card { width: min(440px, 100%); padding: 22px 24px 20px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; pointer-events: auto; }
+.tot-splash-card h2 { font-size: 21px; line-height: 1.25; }
+.tot-splash-card p { font-size: 14.5px; line-height: 1.5; color: #e4dfd0; }
+.tot .tot-tour-no { background: none; border-color: var(--edge); color: var(--dim); padding: 6px 14px; }
+.tot-tour {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 8;
+  width: min(460px, calc(100% - 24px)); padding: 12px 14px 12px; border: 2px solid var(--amber); pointer-events: auto;
+}
+.tot-tour[hidden] { display: none; }
+.tot-tour-count { font-size: 12px; color: var(--dim); margin: 0; }
+.tot-tour-title { margin: 2px 0 4px; font-size: 17px; }
+.tot-tour-text { margin: 0 0 10px; font-size: 15px; line-height: 1.45; }
+.tot-tour-row { display: flex; gap: 8px; align-items: center; }
+.tot-tour-sp { flex: 1; }
+.tot .tot-tour-back:disabled { opacity: 0.4; }
+.tot .tot-tour-skip { background: none; border: 0; color: var(--dim); text-decoration: underline; cursor: pointer; padding: 4px 6px; font-size: 13px; }
+.tot .tot-tour-link {
+  position: absolute; top: 8px; right: 62px; z-index: 4; width: 26px; height: 26px; border-radius: 50%; pointer-events: auto;
+  border: 1px solid var(--edge); background: var(--panel); color: var(--dim); font: 700 14px/1 system-ui, sans-serif; cursor: pointer; padding: 0;
+}
+.tot .tot-tour-link:hover { color: var(--ink); border-color: var(--amber); }
+/* the ring round whatever a tour step is pointing at (also used on map labels, outside .tot) */
+.tot-tour-hl { outline: 4px solid #f2c94c !important; outline-offset: 3px; border-radius: 8px; }
+.tot-label.tot-tour-hl { outline: none !important; }
+.tot-label.tot-tour-hl .tot-pill, .tot-label.tot-tour-hl .tot-tag { box-shadow: 0 0 0 4px #f2c94c, 0 4px 14px rgba(0, 0, 0, 0.4) !important; }

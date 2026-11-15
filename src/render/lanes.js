@@ -98,6 +98,33 @@ function nearestOnSeg(s, x, z) {
   return { d: Math.hypot(s.ax + dx * t - x, s.az + dz * t - z), y: s.ay + (s.by - s.ay) * t, kind: t < 0.5 ? s.ka : s.kb };
 }
 
+/** Points closer than this (and as high) to an earlier track's centreline run on its rails. */
+export const SHARE_TOL = 0.03;
+
+/** Whether (x, z, raw rail height y) lies on the centreline of a track added before selfId. */
+export function onEarlierRails(net, selfId, x, z, y) {
+  if (!net || !net.size) return false;
+  const mine = net.rank(selfId);
+  let hit = false;
+  net.query(x, z, SHARE_TOL, selfId, (s) => {
+    if (hit || !(net.rank(s.id) < mine)) return;
+    const n = nearestOnSeg(s, x, z);
+    if (n.d <= SHARE_TOL && Math.abs(n.y - y) < 0.08) hit = true;
+  });
+  return hit;
+}
+
+/**
+ * Per segment of the resampled route S (heights lifted by RAIL_LIFT): true where both ends lie on the rails of
+ * an earlier track. Those stretches are drawn once, by the earlier track. Pure.
+ */
+export function sharedSegments(S, net, selfId) {
+  const on = S.map((P) => onEarlierRails(net, selfId, P.x, P.z, P.y - RAIL_LIFT));
+  const out = [];
+  for (let i = 0; i + 1 < S.length; i++) out.push(on[i] && on[i + 1]);
+  return out;
+}
+
 /**
  * Nearest other track to (x, z) within r (horizontally). opts.below: only tracks whose rail there lies
  * below this height. Returns {d, y, id, kind} or null.
@@ -204,10 +231,10 @@ export function tagParameter(pts, net, selfId, taken = [], cum = null) {
  * @param {{S: object[], kinds: string[], buried: boolean[], groundAt: Function, net: Network|null, selfId: any, pierEvery: number}} a
  * @returns {{i:number, type:'pier'|'abutment', dir:number, oc:number, wk:number}[]}
  */
-export function planSupports({ S, kinds, buried, groundAt, net, selfId, pierEvery = 0.6 }) {
+export function planSupports({ S, kinds, buried, groundAt, net, selfId, pierEvery = 0.6, shared = null }) {
   const out = [];
   const n = S.length - 1;
-  const isBr = (i) => i >= 0 && i < n && kinds[i] === 'bridge' && !buried[i];
+  const isBr = (i) => i >= 0 && i < n && kinds[i] === 'bridge' && !buried[i] && !(shared && shared[i]);
   const blocked = new Array(n).fill(false);
   if (net && net.size) {
     for (let i = 0; i < n; i++) {

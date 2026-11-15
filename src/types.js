@@ -90,7 +90,7 @@
  * @property {string} from
  * @property {string} to
  * @property {'cheap'|'direct'} style
- * @property {{q:number, r:number, kind:'ground'|'ledge'|'bridge'|'tunnel', lane?: number, over?: boolean, under?: boolean}[]} hexes
+ * @property {{q:number, r:number, kind:'ground'|'ledge'|'bridge'|'tunnel', shared?: boolean, lane?: number, over?: boolean, under?: boolean}[]} hexes
  *   from -> to, inclusive of both station hexes. Tracks never lie on top of one another:
  *   - `lane` (absent or 0 = the hex's own centreline): this track runs ALONGSIDE track that was already
  *     there, as the next parallel track of a shared corridor. +n / -n is the n-th track to the right /
@@ -98,7 +98,13 @@
  *     beside the other track, and splits off again (combine and split); `points` already carry the offset.
  *   - `over`: here the track crosses ABOVE another track on a short bridge (kind 'bridge'), with at least
  *     WORLD.crossingClearance of height between the two rails. `under`: it crosses BELOW another track.
- *   Two tracks only ever share a centreline inside a station hex.
+ *   - `shared`: here the track runs ON the rails of track that was already there. A route JOINS existing
+ *     track at a junction, runs along it, and FORKS off again; `points` coincide with that track's
+ *     centreline for the shared stretch and curve away smoothly at the fork. This is the preferred
+ *     way for routes to combine: sharing rails costs only WORLD.sharedCostFactor of the hex price and
+ *     no extra upkeep, so routes join a trunk and fork rather than run beside it. Trains of different
+ *     tracks use the same rails there. A parallel `lane` is a rare fallback.
+ *   Two tracks only share a centreline along `shared` hexes and inside a station hex.
  * @property {RoutePoint[]} points  dense, already-smoothed centreline polyline from -> to (about 8 points per hex).
  *                                  Everyone positions things on it with sampleRoute() from src/route.js.
  * @property {number} length        world-unit length of `points`
@@ -127,8 +133,10 @@
  *   cheap = lowest construction cost (winds round water and high ground);
  *   direct = shortest, bridging and tunnelling as needed. `same` when both are the same path.
  *   Routes never pass through a third station's hex. Throws if either title is not placed.
- *   A route may run alongside existing track (a parallel lane, cheaper: WORLD.laneCostFactor of the
- *   hex price) and must cross existing track at a different height (over or under), never at grade.
+ *   A route should JOIN existing track that goes its way and fork off where it must (hexes marked
+ *   `shared`, WORLD.sharedCostFactor of the hex price); a parallel lane beside existing track
+ *   (WORLD.laneCostFactor) is a rare fallback; and it must cross existing track at a different height
+ *   (over or under), never at grade.
  * @property {(route: Route) => {revealed: Tile[]}} commitRoute   Records the track; reveals WORLD.revealTrack along it.
  * @property {(q: number, r: number) => Tile} terrainAt           Any hex, revealed or not.
  * @property {(q: number, r: number) => boolean} isRevealed
@@ -251,6 +259,9 @@
  * @property {number} reward     whole gold paid if met now; falls towards half as time runs out
  * @property {number} time       game seconds left before the ticket is withdrawn (no penalty)
  * @property {number} timeMax
+ * @property {number} surveyCost   gold a surveyor costs for this ticket right now
+ * @property {{from: string, to: string}|null} hint   what a bought surveyor found: build `to` next, from your
+ *                               station `from`. Cleared once `to` is built (another surveyor can then be bought).
  */
 
 /**
@@ -311,6 +322,7 @@
  *   'ticketAdded'      { ticket: Ticket }
  *   'ticketDone'       { ticket: Ticket, reward: number }     paid at once
  *   'ticketExpired'    { ticket: Ticket }
+ *   'ticketHint'       { ticket: Ticket, hint: {from: string, to: string}|null }   a surveyor reported, or their advice was used
  *   'thoughtLost'      { thought: Thought }
  *   'trackUpgraded'    { track: Track, train: Train }
  *   'trainsChanged'    { }
@@ -339,6 +351,9 @@
  *   Pays and puts that train on the track (replacing the one there; its passengers get off at
  *   the station it last stopped at). typeId may be omitted when there is only one option.
  *   The new train starts running at once: there is nothing else to press.
+ * @property {(ticketId: number) => Promise<Result & {hint?: {from: string, to: string}}>} buySurveyor
+ *   Pays Ticket.surveyCost and sets Ticket.hint: the next article to build towards that ticket's destination
+ *   and the station to build it from (made priceable at once). One step per purchase.
  * @property {(a: string, b: string) => Track|null} trackBetween   in either direction
  */
 
@@ -354,6 +369,8 @@
  *
  * The renderer subscribes to game events itself and reads game.state every frame.
  * It draws, without being asked:
+ *   - shared rails drawn once: where a Route hex is `shared` the rails already exist, so nothing is drawn
+ *     twice, and the place where a track joins or forks off reads as a junction (points/switch);
  *   - tracks that share a corridor side by side (Route hexes with `lane`) and crossings where one track
  *     bridges over another (`over` / `under`): a clear span with no pier standing on the lower track;
  *   - an upgrade tag floating over every track that can still be upgraded (from game.quoteUpgrade):

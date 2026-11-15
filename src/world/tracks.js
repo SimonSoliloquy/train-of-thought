@@ -44,7 +44,7 @@ export function createTrackStore() {
   function rec(k) {
     let r = hexes.get(k);
     if (!r) {
-      r = { base: null, lanes: new Map(), cross: -1, maxY: -Infinity, minY: Infinity, sum: null };
+      r = { base: null, lanes: new Map(), cross: -1, maxY: -Infinity, minY: Infinity, sum: null, edges: new Map(), forks: 0 };
       hexes.set(k, r);
     }
     return r;
@@ -53,7 +53,7 @@ export function createTrackStore() {
   /** Derived numbers the router needs, recomputed when the hex changes. */
   function summarise(r) {
     const s = {
-      laneMask: 0, outer: [0, 0], sideTrans: [0, 0], minSideTrans: [99, 99], anyTrans: false,
+      laneMask: 0, outer: [0, 0], sideTrans: [0, 0], minSideTrans: [99, 99], anyTrans: r.forks !== 0, forks: r.forks,
       cross: r.cross >= 0,
       hi: Number.isFinite(r.maxY) ? Math.ceil(r.maxY / ELEV_STEP - 1e-6) : -99,
       lo: Number.isFinite(r.minY) ? Math.floor(r.minY / ELEV_STEP + 1e-6) : 99,
@@ -77,12 +77,14 @@ export function createTrackStore() {
       if (st.mode === 'free') { if (base) return false; continue; }
       if (!base) return false;
       const s = r.sum;
+      if (st.mode === 'shared') { if (st.forkSides && s.cross) return false; continue; }
       if (st.mode === 'lane') {
         if (base.rid !== st.baseRid || base.idx !== st.baseIdx) return false;
         if (s.laneMask & (1 << laneSlot(st.lane))) return false;
         const si = st.lane > 0 ? 0 : 1, a = Math.abs(st.lane);
         if (s.sideTrans[si] && s.minSideTrans[si] < a) return false;
         if (st.trans && (s.cross || s.sideTrans[si])) return false;
+        if (s.forks & (si ? 2 : 1)) return false;
         if (st.trans === 'side' && s.outer[si] > a) return false;
       } else if (st.mode === 'cross') {
         if (s.cross || s.anyTrans) return false;
@@ -114,8 +116,32 @@ export function createTrackStore() {
         if (!r.lanes.has(st.lane)) r.lanes.set(st.lane, { rid, trans: st.trans || null });
       } else if (st.mode === 'cross') {
         if (r.cross < 0) r.cross = rid;
+      } else if (st.mode === 'shared') {
+        r.forks |= st.forkSides || 0;
       }
     });
+    // centreline links: where this route runs hex centre to hex centre on its own or shared rails,
+    // later routes may ride the same polyline (shared rails); the first link in a direction stays
+    const centre = (st) => st.mode === 'station' || st.mode === 'free' || st.mode === 'shared';
+    const signAt = (i) => {
+      const r = hexes.get(tileKey(steps[i].q, steps[i].r));
+      const b = r && r.base;
+      if (!b || steps[i].mode === 'station') return 1;
+      const k = Math.min(points.length - 1, i * 8);
+      const a = points[Math.max(0, k - 1)], c = points[Math.min(points.length - 1, k + 1)];
+      const tx = DIR_W[b.hin].x + DIR_W[b.hout].x, tz = DIR_W[b.hin].z + DIR_W[b.hout].z;
+      return (c.x - a.x) * tx + (c.z - a.z) * tz >= 0 ? 1 : -1;
+    };
+    for (let i = 0; i + 1 < steps.length; i++) {
+      const A = steps[i], B = steps[i + 1];
+      if (!centre(A) || !centre(B)) continue;
+      const d = HEX_DIRS.findIndex((x) => A.q + x.q === B.q && A.r + x.r === B.r);
+      const sa = signAt(i), sb = signAt(i + 1);
+      const ra = rec(tileKey(A.q, A.r)), rb = rec(tileKey(B.q, B.r));
+      if (!ra.edges.has(d)) ra.edges.set(d, { rid, k: i * 8, step: 1, sFrom: sa, sTo: sb });
+      if (!rb.edges.has((d + 3) % 6)) rb.edges.set((d + 3) % 6, { rid, k: (i + 1) * 8, step: -1, sFrom: -sb, sTo: -sa });
+      touched.add(ra); touched.add(rb);
+    }
     for (const p of points) {
       const h = worldToHex(p.x, p.z);
       const r = rec(tileKey(h.q, h.r));

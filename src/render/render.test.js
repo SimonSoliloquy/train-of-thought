@@ -876,28 +876,38 @@ test('mock flyover: marked over, clear of the lower rails, nothing stands within
   }
 });
 
-test('mock lanes: tracks run side by side one lane apart, then split; beds merge without overlap', () => {
+test('mock shared rails: routes ride the trunk, fork off tangentially, and draw no second set of rails', () => {
   const { game } = mockRoutes();
   const st = game.state;
-  const lanes = st.tracks.filter((t) => t.route.hexes.some((h) => h.lane));
-  assert.equal(lanes.length, 2, 'two tracks join the trunk, one each side');
-  assert.ok(lanes.some((t) => t.route.hexes.some((h) => h.lane > 0)) && lanes.some((t) => t.route.hexes.some((h) => h.lane < 0)), 'lanes on both sides');
   const trunk = st.tracks.find((t) => t.from === 'Locomotive' && t.to === 'Grand Canyon');
-  const sides = new Map();
-  for (const t of lanes) {
-    // parallel within tolerance: points that run beside the trunk sit one lane spacing from its centreline
-    let beside = 0;
-    for (const p of t.route.points) {
-      const d = lowerDist(p, trunk.route);
-      if (Math.abs(d - WORLD.laneSpacing) < 0.03) beside++;
-    }
-    assert.ok(beside >= 8, `track ${t.id} runs beside the trunk for several hexes (${beside})`);
-    sides.set(t.id, beside);
-  }
-  // rails of neighbouring tracks never overlap: the gauge is narrower than a lane
+  const riders = st.tracks.filter((t) => t.route.hexes.some((h) => h.shared));
+  assert.equal(riders.length, 3, 'three routes ride the trunk: two fork off, one joins');
   const net = new Network();
   for (const t of st.tracks) net.set(t.id, t.route);
-  assert.ok(WORLD.laneSpacing - TRACK.gauge - TRACK.railW > 0.05, 'the rails of neighbouring lanes keep apart');
+  for (const t of riders) {
+    const d = t.route.points.map((p) => lowerDist(p, trunk.route));
+    const on = d.filter((x) => x < 0.03).length;
+    assert.ok(on >= 20, `track ${t.id} runs on the trunk's rails (${on} points)`);
+    // the fork: its own rails start on the trunk's centreline and leave smoothly (no jump)
+    const first = d.findIndex((x, i) => i > 4 && x >= 0.03), last = d.length - 1 - [...d].reverse().findIndex((x, i) => i > 4 && x >= 0.03);
+    const edge = t.from === 'Iron Bridge' ? last : first;
+    assert.ok(d[edge + (edge === last ? 1 : -1)] < 0.03, 'the diverging rails start on the trunk centreline');
+    assert.ok(Math.abs(d[edge] - d[edge + (edge === last ? 1 : -1)]) < 0.2, 'and leave it without a jump');
+    assert.ok(Math.max(...d) > 3, 'then really split away');
+    // drawn once: no vertices for the shared segments
+    const out = buildTrack(t.route, { groundAt: () => 0, naturalAt: () => 0, network: net, id: t.id });
+    const full = buildTrack(t.route, { groundAt: () => 0, naturalAt: () => 0 });
+    assert.ok(out.builder.vertexCount < full.builder.vertexCount * 0.85, 'shared stretch not drawn again');
+    const idle = out.marks.filter((m, i) => i > 0 && m.v === out.marks[i - 1].v).length;
+    assert.ok(idle >= 15, `${idle} shared segments emit nothing`);
+    assert.ok(finiteArr(out.builder.pos));
+  }
+  // the trunk itself is whole (it was drawn first)
+  const tOut = buildTrack(trunk.route, { groundAt: () => 0, naturalAt: () => 0, network: net, id: trunk.id });
+  assert.equal(tOut.marks.filter((m, i) => i > 0 && m.v === tOut.marks[i - 1].v).length, 0);
+});
+
+test('lanes: tracks side by side keep a lane apart and their beds merge without overlap', () => {
   // two straight lanes: each bed stops at the line half way between them
   const a = lineRoute(-3, 0, 3, 0, 0.5), b = lineRoute(-3, WORLD.laneSpacing, 3, WORLD.laneSpacing, 0.5);
   const n2 = new Network(); n2.set('a', a); n2.set('b', b);
@@ -985,4 +995,12 @@ test('upgrade tags of tracks in one corridor hang over their own stretch, not on
   const at = anchors.find((k) => k.id === split.id).a;
   const o = nearestOther(net, split.id, at.x, at.z, 3);
   assert.ok(!o || o.d > 0.8, 'tag of the splitting track over a stretch where it runs alone');
+});
+
+test('a signpost the surveyor pointed at says so', async () => {
+  const { ticketBadge } = await import('./format.js');
+  const tickets = [{ id: 1, from: 'A', to: 'Far', reward: 900, hint: { from: 'A', to: 'Step' } }];
+  assert.deepEqual(ticketBadge('Step', tickets), { kind: 'hint', text: 'Surveyor: build here next' });
+  assert.equal(ticketBadge('Far', tickets).kind, 'to');
+  assert.equal(ticketBadge('Other', tickets), null);
 });

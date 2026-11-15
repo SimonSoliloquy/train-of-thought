@@ -7,7 +7,7 @@ import { ticketView } from './format.js';
 const LEAVE_MS = 1300;
 
 export function createTickets(ctx) {
-  const { state } = ctx;
+  const { state, game } = ctx;
   const el = h('div', { class: 'tot-tickets', 'aria-label': 'Tickets' });
   const rows = new Map(); // ticket id -> { el, refs, t, leaving, timer }
 
@@ -16,14 +16,41 @@ export function createTickets(ctx) {
     const reward = h('b', { class: 'tot-tk-reward' });
     const how = h('div', { class: 'tot-tk-how' });
     const fill = h('div', { class: 'tot-bar-fill' });
+    // The surveyor: pay to be shown the next article to build towards this ticket.
+    const survey = h('button', { class: 'tot-tk-survey', type: 'button' });
+    const hint = h('div', { class: 'tot-tk-hint', hidden: true });
     const row = h('div', { class: 'tot-panel tot-ticket' },
-      h('div', { class: 'tot-tk-top' }, route, reward), how, h('div', { class: 'tot-bar tot-tk-bar' }, fill));
-    const r = { el: row, refs: { route, reward, how, fill }, t, leaving: false, timer: 0 };
+      h('div', { class: 'tot-tk-top' }, route, reward), how, hint, survey, h('div', { class: 'tot-bar tot-tk-bar' }, fill));
+    const r = { el: row, refs: { route, reward, how, fill, survey, hint }, t, leaving: false, timer: 0, busy: false };
+    survey.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (r.leaving || r.busy) return;
+      r.busy = true;
+      paint(r);
+      Promise.resolve()
+        .then(() => game.buySurveyor(r.t.id))
+        .catch((err) => ({ ok: false, reason: (err && err.message) || 'The surveyor could not be hired.' }))
+        .then((res) => {
+          r.busy = false;
+          if (ctx.report(res) && res.hint) follow(res.hint);
+          paint(r);
+        });
+    });
     row.addEventListener('click', () => {
-      if (r.leaving || !state.stations.has(r.t.from)) return;
+      if (r.leaving) return;
+      if (r.t.hint) { follow(r.t.hint); return; }
+      if (!state.stations.has(r.t.from)) return;
       ctx.select(r.t.from, { focus: true });
     });
     return r;
+  }
+
+  /** Show the player what the surveyor found: select the station to build from and price the build. */
+  function follow(hint) {
+    if (!hint || !state.stations.has(hint.from)) return;
+    if (state.stations.has(hint.to)) { ctx.select(hint.to, { focus: true }); return; }
+    ctx.select(hint.from);
+    ctx.openBuild(hint.to, hint.from);
   }
 
   function paint(r) {
@@ -36,7 +63,15 @@ export function createTickets(ctx) {
       r.refs.fill.className = 'tot-bar-fill ' + v.tone;
       r.refs.fill._tone = v.tone;
     }
-    setClass(r.el, 'go', v.fromBuilt && !r.leaving);
+    const h2 = r.t.hint;
+    r.refs.hint.hidden = !h2;
+    if (h2) setText(r.refs.hint, `Surveyor: build ${h2.to} next, from ${h2.from}`);
+    r.refs.survey.hidden = !!h2 || r.leaving;
+    const cost = Math.round(r.t.surveyCost || 0);
+    setText(r.refs.survey, r.busy ? 'Surveying\u2026' : `Surveyor \u00b7 ${cost.toLocaleString('en-US')} gold`);
+    setClass(r.refs.survey, 'poor', !r.busy && state.money < cost);
+    r.refs.survey.title = 'Pay a surveyor to show the next article to build towards this ticket';
+    setClass(r.el, 'go', (v.fromBuilt || !!h2) && !r.leaving);
     if (r.el.title !== (r.t.toDescription || '')) r.el.title = r.t.toDescription || '';
   }
 

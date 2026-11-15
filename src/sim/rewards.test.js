@@ -758,3 +758,51 @@ test('the clock starts with the first build: then time passes, paydays come and 
   const now = game.state.tickets.find((t) => t.id === open.id);
   assert.ok(now && now.reward < before && now.time < now.timeMax);
 });
+
+test('surveyor: for a fee, shows the next article to build towards a ticket, one step at a time', async () => {
+  const wiki = createFakeWiki(treeGraph(5, 3), { start: 'N0' });
+  const world = createFakeWorld();
+  const game = createGame({ wiki, world, seed: 5, spawnThoughts: false });
+  const hints = [];
+  game.on('ticketHint', (p) => hints.push(p.hint));
+  await game.start();
+  game.state.money = 1000;
+  // a ticket three links out, with the route it was drawn along
+  const t = game._debug.addTicket('N0', 'N0.1.2.0', '', '', 3, ['N0', 'N0.1', 'N0.1.2', 'N0.1.2.0']);
+  assert.equal(t.hint, null);
+  assert.equal(t.surveyCost, Math.round(ECON.surveyorCost * game.state.inflation));
+
+  const r1 = await game.buySurveyor(t.id);
+  assert.equal(r1.ok, true);
+  assert.deepEqual(r1.hint, { from: 'N0', to: 'N0.1' });
+  assert.deepEqual(t.hint, { from: 'N0', to: 'N0.1' });
+  assert.equal(game.state.money, 1000 - t.surveyCost);
+  assert.ok(world.placements.has('N0.1'), 'the hinted article can be priced');
+  assert.equal(game.quoteBuild('N0', 'N0.1').ok, true);
+
+  // asking again while the advice stands costs nothing
+  const again = await game.buySurveyor(t.id);
+  assert.equal(again.ok, true);
+  assert.equal(game.state.money, 1000 - t.surveyCost);
+
+  // building what was pointed at uses the advice up; the next purchase shows the next step
+  await game.build('N0', 'N0.1');
+  assert.equal(t.hint, null);
+  assert.equal(hints.at(-1), null);
+  const r2 = await game.buySurveyor(t.id);
+  assert.deepEqual(r2.hint, { from: 'N0.1', to: 'N0.1.2' });
+
+  // not enough gold, an unknown ticket, and a ticket with no recorded route are refused without charge
+  game.state.money = 1;
+  await game.build('N0.1', 'N0.1.2').catch(() => {});
+  const poor = game._debug.addTicket('N0', 'N0.2.2', '', '', 2, ['N0', 'N0.2', 'N0.2.2']);
+  const r3 = await game.buySurveyor(poor.id);
+  assert.equal(r3.ok, false);
+  assert.match(r3.reason, /gold/);
+  assert.equal(game.state.money, 1);
+  assert.equal((await game.buySurveyor(9999)).ok, false);
+  game.state.money = 500;
+  const blind = game._debug.addTicket('N0', 'N0.0.0', '', '', 2);
+  assert.equal((await game.buySurveyor(blind.id)).ok, false);
+  assert.equal(game.state.money, 500);
+});

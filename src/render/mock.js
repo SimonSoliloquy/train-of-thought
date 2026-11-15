@@ -98,9 +98,14 @@ function dedupe(path) {
  * Path items may also carry what the real router produces for tracks that share space:
  *   lane  (+n right / -n left of the first track's centreline: the points are offset sideways by
  *          WORLD.laneSpacing * lane, eased between hexes), over / under (crossing flags),
+ *   shared (this hex is on the rails of `share.route`: its hex index there is this one + share.offset): the points
+ *          coincide with that route's through shared hexes and curve away tangentially where the track forks or joins,
  *   kind  (force a kind, e.g. 'bridge' for a flyover), dy (raise the rail here, for ramps and flyovers).
  */
-export function makeRoute(from, to, path, terrainAt, style = 'direct') {
+const CHAIKIN_PTS = new WeakMap(); // route -> its smoothed centreline carrying (y, u), for routes that share rails
+const smoothstep01 = (t) => { t = Math.max(0, Math.min(1, t)); return t * t * (3 - 2 * t); };
+
+export function makeRoute(from, to, path, terrainAt, style = 'direct', share = null) {
   const tiles = path.map((h) => terrainAt(h.q, h.r));
   const endE = Math.max(tiles[0].elevation, tiles[tiles.length - 1].elevation);
   const hexes = path.map((h, i) => {
@@ -122,6 +127,7 @@ export function makeRoute(from, to, path, terrainAt, style = 'direct') {
     if (h.kind && i > 0 && i < path.length - 1) kind = h.kind;
     const out = { q: h.q, r: h.r, kind };
     if (h.lane) out.lane = h.lane;
+    if (h.shared && share) { out.shared = true; const th = share.route.hexes[i + share.offset]; if (th && i > 0 && i < path.length - 1) out.kind = th.kind; }
     if (h.over) out.over = true;
     if (h.under) out.under = true;
     return out;
@@ -160,6 +166,37 @@ export function makeRoute(from, to, path, terrainAt, style = 'direct') {
     }
     next.push(pts[pts.length - 1]);
     pts = next;
+  }
+  CHAIKIN_PTS.set(hexes, pts);
+  // shared rails: through shared hexes the line IS the other route's; it blends back to its own path round the fork / join
+  if (share) {
+    const sh = path.map((h) => !!h.shared);
+    for (let i = 0; i < sh.length; i++) if (!sh[i] && ((i === 0 && sh[1]) || (i === sh.length - 1 && sh[i - 1]))) sh[i] = true;
+    const tp = CHAIKIN_PTS.get(share.route.hexes);
+    const atU = (u) => {
+      let lo = 0, hi = tp.length - 1;
+      while (hi - lo > 1) { const m = (lo + hi) >> 1; if (tp[m].u <= u) lo = m; else hi = m; }
+      const a = tp[lo], b = tp[hi], f = b.u > a.u ? Math.max(0, Math.min(1, (u - a.u) / (b.u - a.u))) : 0;
+      return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, z: a.z + (b.z - a.z) * f };
+    };
+    const runs = [];
+    for (let i = 0; i < sh.length; i++) if (sh[i]) { let j = i; while (j + 1 < sh.length && sh[j + 1]) j++; runs.push([i, j]); i = j; }
+    const wAt = (u) => {
+      let w = 0;
+      for (const [a, b] of runs) {
+        if (u >= a - 0.15 && u <= b + 0.15) return 1;
+        if (u < a - 0.15) w = Math.max(w, smoothstep01((u - (a - 1)) / 0.85));
+        else w = Math.max(w, smoothstep01(((b + 1) - u) / 0.85));
+      }
+      return w;
+    };
+    pts = pts.map((p) => {
+      const w = wAt(p.u);
+      if (w <= 0) return p;
+      const t = atU(p.u + share.offset);
+      return { ...p, x: p.x + (t.x - p.x) * w, y: p.y + (t.y - p.y) * w, z: p.z + (t.z - p.z) * w };
+    });
+    CHAIKIN_PTS.set(hexes, pts);
   }
   // lanes: slide the line sideways (to the right of travel for +n), eased between hex centres
   if (lanes.some((l) => l)) {
@@ -225,26 +262,39 @@ export const MOCK_GHOSTS = [
 export const MOCK_TRACKS = [
   ['Locomotive', 'Iron Bridge'],
   ['Locomotive', 'Grand Canyon'],      // the trunk
-  ['Locomotive', 'Simplon Tunnel'],    // runs beside the trunk on its left, then splits north
+  ['Locomotive', 'Simplon Tunnel'],    // runs on the trunk's rails, forks off north
   ['Grand Canyon', 'Sahara'],
   ['Iron Bridge', 'Amazon rainforest'],
   ['Locomotive', 'Black Forest'],
-  ['Iron Bridge', 'Grand Canyon'],     // joins the trunk from the right and runs beside it to the station
+  ['Iron Bridge', 'Grand Canyon'],     // joins the trunk and runs on its rails to the station
   ['Black Forest', 'Grand Canyon'],    // flies over the Simplon track on a bridge
+  ['Locomotive', 'Sahara'],            // runs on the trunk's rails, forks off south-east
 ];
 
-// Hand-made paths for the tracks that share a corridor or cross. [q, r, extras]
+// Hand-made paths for the tracks that share rails or cross. [q, r, extras]
 const MOCK_PATHS = {
   'Locomotive|Grand Canyon': [[0, 0], [1, -1], [2, -1], [3, -2], [4, -2], [5, -3], [6, -3], [7, -4]],
-  'Locomotive|Simplon Tunnel': [[0, 0], [1, -1, { lane: -1 }], [2, -1, { lane: -1 }], [3, -2, { lane: -1 }], [3, -3, { under: true }], [3, -4], [3, -5], [4, -6], [4, -7], [4, -8], [4, -9]],
-  'Iron Bridge|Grand Canyon': [[-3, 6], [-2, 6], [-1, 5], [0, 4], [1, 3], [2, 2], [3, 1], [3, 0], [3, -1], [3, -2, { lane: 1 }], [4, -2, { lane: 1 }], [5, -3, { lane: 1 }], [6, -3, { lane: 1 }], [7, -4]],
+  'Locomotive|Simplon Tunnel': [[0, 0], [1, -1, { shared: true }], [2, -1, { shared: true }], [3, -2, { shared: true, }], [3, -3, { under: true }], [3, -4], [3, -5], [4, -6], [4, -7], [4, -8], [4, -9]],
+  'Iron Bridge|Grand Canyon': [[-3, 6], [-2, 6], [-1, 5], [0, 4], [1, 3], [2, 2], [3, 1], [3, 0], [3, -1], [3, -2, { shared: true }], [4, -2, { shared: true }], [5, -3, { shared: true }], [6, -3, { shared: true }], [7, -4]],
+  'Locomotive|Sahara': [[0, 0], [1, -1, { shared: true }], [2, -1, { shared: true }], [3, -2, { shared: true }], [4, -2, { shared: true }], [4, -1], [5, -1], [6, -1], [7, -1], [7, 0], [7, 1], [8, 1], [9, 1]],
   'Black Forest|Grand Canyon': [[-6, -1], [-5, -2], [-4, -2], [-3, -2], [-2, -2], [-1, -2], [0, -2], [1, -3, { dy: 0.25 }], [2, -3, { kind: 'bridge', dy: 0.6 }], [3, -3, { kind: 'bridge', over: true, dy: 1.0 }], [4, -3, { kind: 'bridge', dy: 0.6 }], [5, -4, { dy: 0.25 }], [6, -4], [7, -4]],
 };
-export function mockPath(a, b) {
-  const p = MOCK_PATHS[`${a.title}|${b.title}`];
-  return p ? p.map(([q, r, x]) => ({ q, r, ...(x || {}) })) : null;
+// which earlier route each shares rails with, and its hex index there minus ours
+const MOCK_SHARE = {
+  'Locomotive|Simplon Tunnel': { trunk: 'Locomotive|Grand Canyon', offset: 0 },
+  'Locomotive|Sahara': { trunk: 'Locomotive|Grand Canyon', offset: 0 },
+  'Iron Bridge|Grand Canyon': { trunk: 'Locomotive|Grand Canyon', offset: -6 },
+};
+function fixedRoute(from, to, terrainAt, style) {
+  const key = `${from}|${to}`;
+  const raw = MOCK_PATHS[key];
+  if (!raw) return null;
+  const path = raw.map(([q, r, x]) => ({ q, r, ...(x || {}) }));
+  const sh = MOCK_SHARE[key];
+  let share = null;
+  if (sh) { const [tf, tt] = sh.trunk.split('|'); share = { route: fixedRoute(tf, tt, terrainAt, 'direct'), offset: sh.offset }; }
+  return makeRoute(from, to, path, terrainAt, style, share);
 }
-
 export function createMockWorld({ seed = 7 } = {}) {
   const cache = new Map();
   const revealed = new Map();
@@ -302,9 +352,9 @@ export function createMockWorld({ seed = 7 } = {}) {
     },
     findRoutes(fromTitle, toTitle) {
       const a = posOf(fromTitle), b = posOf(toTitle);
-      const fixed = mockPath({ title: fromTitle }, { title: toTitle });
+      const fixed = MOCK_PATHS[`${fromTitle}|${toTitle}`];
       if (fixed) {
-        const r = makeRoute(fromTitle, toTitle, fixed, terrainAt, 'direct');
+        const r = fixedRoute(fromTitle, toTitle, terrainAt, 'direct');
         return { cheap: { ...r, style: 'cheap' }, direct: r, same: true };
       }
       const direct = makeRoute(fromTitle, toTitle, dedupe(hexLine(a, b)), terrainAt, 'direct');
@@ -340,7 +390,7 @@ export function mockLinks(title) {
 
 // Starting levels of the mock tracks once the network is built: bare, local, express
 // (offering the final choice), freight and bullet, so every tag and train shows up.
-export const MOCK_START_LEVELS = [2, 1, 3, 3, 0, 1, 1, 2];
+export const MOCK_START_LEVELS = [2, 1, 3, 3, 0, 1, 1, 2, 2];
 const FINALS = ['freight', 'bullet'];
 
 export function createMockGame({ world, buildInterval = 1.1, money = 400 }) {

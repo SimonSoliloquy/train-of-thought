@@ -44,14 +44,14 @@ export function measureNetwork(routes, stationHexes) {
       routeHexes++;
       if (h.lane) continue;
       if (!centre.has(k)) centre.set(k, []);
-      centre.get(k).push({ ri, crossing: !!(h.over || h.under) });
+      centre.get(k).push({ ri, crossing: !!(h.over || h.under || h.shared) });
     }
   });
   let stacked = 0;
   for (const list of centre.values()) {
     if (list.length < 2) continue;
     for (const e of list) if (!e.crossing && list.some((o) => o.ri !== e.ri && !o.crossing)) stacked++;
-    // two crossing tracks over one base are fine; a base with no crossing partner is counted above
+    // a crossing or a shared run over a base is fine; two plain centrelines are counted above
   }
   // 2. crossings (horizontal intersections of two polylines outside stations) and their clearance,
   // 3. minimum 3D distance between two different tracks outside station hexes
@@ -62,12 +62,24 @@ export function measureNetwork(routes, stationHexes) {
     return { x0, x1, z0, z1 };
   });
   const near = (a, b, m) => a.x0 - m <= b.x1 && b.x0 - m <= a.x1 && a.z0 - m <= b.z1 && b.z0 - m <= a.z1;
-  const stationFlags = routes.map((r) => r.points.map(inStation));
+  // hexes where a pair may meet: shared hexes of either route and the hex either side of a shared
+  // run (where it joins or forks, curving onto / off the trunk)
+  const meet = routes.map((r) => {
+    const set = new Set();
+    r.hexes.forEach((h, i) => {
+      if (!h.shared) return;
+      for (const x of [r.hexes[i - 1], h, r.hexes[i + 1]]) if (x) set.add(hexKey(x.q, x.r));
+    });
+    return set;
+  });
+  const hexOfPt = routes.map((r) => r.points.map((p) => { const h = worldToHex(p.x, p.z); return hexKey(h.q, h.r); }));
+  const stationFlags = routes.map((r, i) => hexOfPt[i].map((k) => stationHexes.has(k)));
   for (let i = 0; i < routes.length; i++) {
     for (let j = i + 1; j < routes.length; j++) {
       if (!near(boxes[i], boxes[j], 1)) continue;
       const A = routes[i].points, B = routes[j].points;
-      const fa = stationFlags[i], fb = stationFlags[j];
+      const ex = (k) => meet[i].has(k) || meet[j].has(k);
+      const fa = stationFlags[i].map((f, x) => f || ex(hexOfPt[i][x])), fb = stationFlags[j].map((f, x) => f || ex(hexOfPt[j][x]));
       for (let a = 0; a + 1 < A.length; a++) {
         const a0 = A[a], a1 = A[a + 1];
         const ax0 = Math.min(a0.x, a1.x) - 1, ax1 = Math.max(a0.x, a1.x) + 1;
@@ -78,7 +90,8 @@ export function measureNetwork(routes, stationHexes) {
           const c = segCross(a0, a1, b0, b1);
           if (c) {
             const pa = { x: a0.x + (a1.x - a0.x) * c.t, z: a0.z + (a1.z - a0.z) * c.t };
-            if (!inStation(pa)) {
+            const ph = worldToHex(pa.x, pa.z), pk = hexKey(ph.q, ph.r);
+            if (!stationHexes.has(pk) && !ex(pk)) {
               crossings++;
               const ya = a0.y + (a1.y - a0.y) * c.t, yb = b0.y + (b1.y - b0.y) * c.u;
               const dy = Math.abs(ya - yb);
@@ -92,8 +105,13 @@ export function measureNetwork(routes, stationHexes) {
       }
     }
   }
-  let laneRoutes = 0, laneHexes = 0, over = 0, under = 0;
+  let laneRoutes = 0, laneHexes = 0, over = 0, under = 0, sharedRoutes = 0, sharedHexes = 0, forks = 0;
+  const distinct = new Set();
   for (const r of routes) {
+    for (const h of r.hexes) if (!h.shared) distinct.add(hexKey(h.q, h.r));
+    const sh = r.hexes.filter((h) => h.shared).length;
+    if (sh) { sharedRoutes++; sharedHexes += sh; }
+    for (let i = 1; i < r.hexes.length; i++) if (!!r.hexes[i].shared !== !!r.hexes[i - 1].shared) forks++;
     const n = r.hexes.filter((h) => h.lane).length;
     if (n) { laneRoutes++; laneHexes += n; }
     over += r.hexes.filter((h) => h.over).length;
@@ -102,6 +120,6 @@ export function measureNetwork(routes, stationHexes) {
   return {
     routes: routes.length, routeHexes, stacked, crossings, atGrade,
     minClear: crossings ? minClear : NaN, minDist: Math.sqrt(minDist),
-    laneRoutes, laneHexes, over, under,
+    laneRoutes, laneHexes, over, under, sharedRoutes, sharedHexes, forks, distinct: distinct.size,
   };
 }

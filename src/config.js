@@ -18,8 +18,9 @@ export const WORLD = {
   revealGhost: -1,          // tiles revealed around an unbuilt link's reserved spot; -1 = none (nothing shows in the fog)
   maxElevation: 4,          // world units
   laneSpacing: 0.26,        // world units between parallel tracks in a shared corridor
-  maxLanesPerSide: 2,       // a corridor holds the first track plus this many each side
-  laneCostFactor: 0.6,      // laying track beside existing track costs this share of the hex price
+  maxLanesPerSide: 1,       // a corridor holds the first track plus this many each side (a rare fallback)
+  laneCostFactor: 0.9,      // laying track beside existing track costs this share of the hex price
+  sharedCostFactor: 0.15,   // running on rails that are already there costs this share: joining and forking is the cheap way
   crossingClearance: 0.6,   // least height between two rails where one track crosses over another
 };
 
@@ -67,7 +68,8 @@ export const ECON = {
   ticketMaxLinks: 4,
   ticketSecondsBase: 420,           // time before a ticket is withdrawn
   ticketSecondsPerLink: 240,
-  ticketGapSeconds: 20,              // pause before a new ticket replaces one that is gone
+surveyorCost: 60,                 // gold (times inflation) for a surveyor to show the next article towards a ticket
+    ticketGapSeconds: 20,              // pause before a new ticket replaces one that is gone
   paydaySeconds: 10,                // money arrives in one lump this often
   bankruptcyGraceSeconds: 45,
   dwellSeconds: 3,

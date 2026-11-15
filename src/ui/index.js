@@ -10,6 +10,7 @@ import { createBuildCard } from './buildcard.js';
 import { createToasts, createRideLabel } from './notes.js';
 import { createScreens } from './screens.js';
 import { createSound } from './sound.js';
+import { createTour } from './tour.js';
 
 const TICK = 0.1; // seconds between live-number refreshes
 const SPEED_KEYS = { 1: 1, 2: 2, 3: 4 };
@@ -29,6 +30,7 @@ export function createUI({ root, game, renderer, wiki }) {
   const rideLabel = createRideLabel(ctx);
   const screens = createScreens(ctx);
   const sound = createSound({ game });
+  const tour = createTour(ctx);
 
   // Layout: gold readout top left with the tickets under it, speed top right, the goal line top
   // centre (its own row when narrow). The stage holds the notes (riding label, toasts). The
@@ -37,7 +39,7 @@ export function createUI({ root, game, renderer, wiki }) {
   // floats it over the place being built towards.
   const notes = h('div', { class: 'tot-notes' }, rideLabel.el, toasts.el);
   const stage = h('div', { class: 'tot-stage' }, notes);
-  const app = h('div', { class: 'tot tot-root' }, hud.el, hud.speed, goal.el, tickets.el, stage, article.el, screens.el);
+  const app = h('div', { class: 'tot tot-root' }, hud.el, hud.speed, tour.link, goal.el, tickets.el, stage, article.el, tour.card, tour.splash, screens.el);
   app.dataset.phase = state.phase === 'gameOver' ? 'over' : state.phase;
   root.append(app);
 
@@ -52,6 +54,8 @@ export function createUI({ root, game, renderer, wiki }) {
     screens.render();
     // Select the first station so its signposts show. Nothing opens.
     if (e && e.station) ctx.select(e.station.title, { kind: 'station' });
+    // First visit: offer the tour once the first ticket has had a moment to arrive.
+    setTimeout(() => tour.maybeSplash(), 2500);
   });
   for (const name of ['stationBuilt', 'trackBuilt', 'ghostsAdded', 'trackUpgraded']) {
     on(name, () => {
@@ -59,7 +63,7 @@ export function createUI({ root, game, renderer, wiki }) {
     });
   }
   for (const name of ['thoughtDelivered', 'thoughtLost']) on(name, () => { dirty.goal = true; });
-  for (const name of ['ticketAdded', 'ticketExpired']) on(name, () => { dirty.tickets = dirty.search = true; });
+  for (const name of ['ticketAdded', 'ticketExpired', 'ticketHint']) on(name, () => { dirty.tickets = dirty.search = true; });
   on('ticketDone', (e) => {
     tickets.done(e);
     hud.pulse();
@@ -79,6 +83,7 @@ export function createUI({ root, game, renderer, wiki }) {
     dirty.hud = true;
   });
   on('gameOver', (e) => {
+    tour.stop();
     ctx.stopRide();
     ctx.deselect();
     screens.onGameOver(e);
@@ -139,6 +144,7 @@ export function createUI({ root, game, renderer, wiki }) {
     const t = e.target;
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
     if (e.key === 'Escape') {
+      if (tour.escape()) { e.preventDefault(); return; }
       if (article.close()) { e.preventDefault(); return; } // the article first; the station stays selected
       if (typing) return;
       if (ctx.back()) e.preventDefault();

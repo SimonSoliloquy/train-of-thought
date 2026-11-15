@@ -4,7 +4,7 @@
 import { MeshBuilder, rgb, shade, mix } from './builder.js';
 import { sampleRoute, routeLength, RAIL_LIFT } from './rail.js';
 import { TRACK_COLORS as C, ROUTE_PREVIEW } from './palette.js';
-import { LANES, lateralHits, sideGaps, halfGap, nearestOther, planSupports, spanWeights } from './lanes.js';
+import { LANES, sharedSegments, onEarlierRails, lateralHits, sideGaps, halfGap, nearestOther, planSupports, spanWeights } from './lanes.js';
 
 export const TRACK = {
   step: 0.13,
@@ -137,6 +137,20 @@ function embankSide(bld, A, B, side, ea, eb) {
   const a0 = at(A, side * bb, top), b0 = at(B, side * bb, top);
   const a1 = [A.x + A.rx * o1a, ea.gy, A.z + A.rz * o1a], b1 = [B.x + B.rx * o1b, eb.gy, B.z + B.rz * o1b];
   if (side > 0) bld.quad(a0, b0, b1, a1, col); else bld.quad(a1, b1, b0, a0, col);
+}
+
+/** Points: a small switch stand beside the fork or join where this track's own rails meet shared ones. */
+function switchStand(bld, S, i, shared, net, selfId) {
+  const A = S[i];
+  const j = Math.min(S.length - 1, Math.max(0, shared[i + 1] ? i - 5 : i + 5));
+  const hits = lateralHits(net, selfId, S[j], S[j].y - RAIL_LIFT, 1.2).filter((h) => Math.abs(h.dy) < LANES.sameLevel);
+  if (!hits.length) return;
+  const near = hits.reduce((b, h) => (Math.abs(h.lat) < Math.abs(b.lat) ? h : b));
+  const side = near.lat > 0 ? -1 : 1; // on the outer side, away from the trunk
+  const o = side * 0.3;
+  frameBox(bld, A, o, -0.01, 0, 0.07, 0.03, 0.07, C.pierDark);
+  frameBox(bld, A, o, 0.07, 0, 0.025, 0.16, 0.025, C.pierDark);
+  frameBox(bld, A, o, 0.17, 0, 0.07, 0.05, 0.03, '#c8402e');
 }
 
 /** Stone abutment where a span ends beside another track; dir: +1 when the span lies ahead. */
@@ -346,10 +360,11 @@ export function gradeSegments(route, naturalAt, opts = {}) {
   for (let i = 0; i + 1 < S.length; i++) {
     if (buried[i] || kinds[i] === 'bridge') continue;
     const A = S[i], B = S[i + 1];
+    if (net && net.size && onEarlierRails(net, opts.id, (A.x + B.x) / 2, (A.z + B.z) / 2, (A.y + B.y) / 2 - RAIL_LIFT)) continue; // graded by the track whose rails these are
     if (net && net.size) {
       let over = false;
       for (const P of [A, B, { x: (A.x + B.x) / 2, z: (A.z + B.z) / 2, y: (A.y + B.y) / 2 }]) {
-        if (nearestOther(net, opts.id, P.x, P.z, clear, { below: P.y - RAIL_LIFT - LANES.sameLevel })) { over = true; break; }
+        if (nearestOther(net, opts.id, P.x, P.z, clear, { below: P.y - RAIL_LIFT - 0.5 })) { over = true; break; }
       }
       if (over) continue;
     }
@@ -397,9 +412,11 @@ export function buildTrack(route, env = {}) {
   const hasGround = typeof natAt === 'function';
   const { kinds: segKinds, buried } = buriedSegments(route, S, natAt);
   const rockAt = (x, y, z) => { const g = natAt(x, z); return Number.isFinite(g) ? g > y + TUNNEL_COVER : true; };
+  // stretches on an earlier track's rails are drawn once, by that track
+  const shared = net ? sharedSegments(S, net, selfId) : S.slice(1).map(() => false);
   const supportAt = new Map();
   const supports = [];
-  for (const sp of planSupports({ S, kinds: segKinds, buried, groundAt, net, selfId, pierEvery: TRACK.pierEvery })) {
+  for (const sp of planSupports({ S, kinds: segKinds, buried, groundAt, net, selfId, pierEvery: TRACK.pierEvery, shared })) {
     supportAt.set(sp.i, sp);
     supports.push({ x: S[sp.i].x, z: S[sp.i].z, type: sp.type, i: sp.i });
   }
@@ -408,7 +425,8 @@ export function buildTrack(route, env = {}) {
   const lims = (A, B) => {
     if (!net) return [Infinity, Infinity, false, false];
     const P = { x: (A.x + B.x) / 2, z: (A.z + B.z) / 2, tx: A.tx, tz: A.tz, rx: A.rx, rz: A.rz };
-    const hits = lateralHits(net, selfId, P, (A.y + B.y) / 2 - RAIL_LIFT, LANES.reach);
+    // a track on these very rails is not a neighbour; one diverging from them is (the beds meet half way: a wedge)
+    const hits = lateralHits(net, selfId, P, (A.y + B.y) / 2 - RAIL_LIFT, LANES.reach).filter((h) => Math.abs(h.lat) > 0.04);
     const g = sideGaps(hits);
     // anything else (a track under or over) within reach of a side: no wall or bank may stand there
     let nearL = false, nearR = false;
@@ -446,6 +464,7 @@ export function buildTrack(route, env = {}) {
     const A = S[i], B = S[i + 1];
     const kind = segKinds[i];
     kinds[kind] = (kinds[kind] || 0) + 1;
+    if (shared[i]) { marks.push({ s: B.s, v: bld.vertexCount }); continue; }
     if (i > 0 && buried[i] !== buried[i - 1]) {
       // d = +1: rock ahead (toward route.to). Find the rock face between the neighbouring samples.
       const d = buried[i] ? 1 : -1;
@@ -503,6 +522,7 @@ export function buildTrack(route, env = {}) {
       }
     }
     railsAndSleeper(bld, A, B, true, limL, limR);
+    if (net && kind !== 'bridge' && ((i > 0 && shared[i - 1]) || shared[i + 1])) switchStand(bld, S, i, shared, net, selfId);
     marks.push({ s: B.s, v: bld.vertexCount });
   }
   return { builder: bld, marks, portals, supports, length: L, kinds, buried: buriedIntervals(S, buried) };

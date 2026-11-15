@@ -190,6 +190,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     `(${(sum('laneHexes') / Math.max(1, sum('laneRoutes'))).toFixed(1)} per such route); over ${sum('over')}, under ${sum('under')}; ` +
     `min distance between tracks outside stations ${Math.min(...M.map((m) => m.minDist)).toFixed(3)} (laneSpacing ${WORLD.laneSpacing}), ` +
     `seeds under 0.8 x laneSpacing: ${M.filter((m) => m.minDist < 0.8 * WORLD.laneSpacing).length}/${SEEDS}`);
+  console.log(`  shared rails: ${sum('sharedRoutes')}/${sum('routes')} routes (${(sum('sharedHexes') / sum('routes')).toFixed(2)} shared hexes per route), ` +
+    `${sum('sharedHexes')} shared vs ${sum('laneHexes')} lane hexes; forks/joins ${sum('forks')} (min per seed ${Math.min(...M.map((m) => m.forks))}); ` +
+    `distinct track hexes per network ${(sum('distinct') / SEEDS).toFixed(1)}`);
   allT.sort((a, b) => a - b);
   console.log(`findRoutes: avg ${avg(allT).toFixed(2)} ms, median ${allT[allT.length >> 1].toFixed(2)} ms, p95 ${allT[Math.floor(allT.length * 0.95)].toFixed(2)} ms, max ${allT.at(-1).toFixed(2)} ms (includes cold terrain)`);
   const meanUnshared = avg(L.unshared);

@@ -58,15 +58,17 @@ const KINDS = ['ground', 'ledge', 'bridge', 'tunnel'];
 const KIND_COST = KINDS.map((k) => ECON.trackCostPerHex[k]);
 const MIN_KIND_COST = Math.min(...KIND_COST);
 const LANE_FACTOR = WORLD.laneCostFactor;
+const SHARED_FACTOR = WORLD.sharedCostFactor;
 const LANE_SPACING = WORLD.laneSpacing;
 const M = MAX_LANES;
 const LANE_SLOTS = 2 * M; // lanes +1..+M, -1..-M
 const LANE_STATES = LANE_SLOTS * 2; // x fresh flag
 const HEX_STEP = Math.sqrt(3) * HEX_SIZE;
+const DIR_W = HEX_DIRS.map((d) => hexToWorld(d.q, d.r));
 
 /** Price of one route hex: its kind, at the lane factor when it runs beside existing track. */
 export function hexPrice(h) {
-  return ECON.trackCostPerHex[h.kind] * (h.lane ? LANE_FACTOR : 1);
+  return ECON.trackCostPerHex[h.kind] * (h.shared ? SHARED_FACTOR : h.lane ? LANE_FACTOR : 1);
 }
 
 /**
@@ -156,6 +158,7 @@ export function createRouter(terrain, stationAt, store) {
     const ground = new Int32Array(n), water = new Uint8Array(n), slope = new Float64Array(n);
     const blocked = new Uint8Array(n), hDist = new Int32Array(n), occ = new Int32Array(n).fill(-1);
     const ring = new Float64Array(n);
+    const hexEdge = new Int32Array(n * 6).fill(-1), E = []; // centreline links out of each hex
     const recs = [];
     for (let i = 0; i < n; i++) {
       const h = hexes[i];
@@ -167,7 +170,9 @@ export function createRouter(terrain, stationAt, store) {
       const isEnd = (h.q === a.q && h.r === a.r) || (h.q === b.q && h.r === b.r);
       blocked[i] = st != null && !isEnd ? 1 : 0;
       hDist[i] = hexDistance(h, b);
-      const rec = isEnd ? null : store.get(h.q, h.r);
+      const any = store.get(h.q, h.r);
+      if (any) for (const [d, e] of any.edges) { hexEdge[i * 6 + d] = E.length; E.push(e); }
+      const rec = isEnd ? null : any;
       if (rec && rec.base) { occ[i] = recs.length; recs.push({ i, rec }); }
       if (!isEnd) {
         for (let d = 0; d < 6; d++) {
@@ -188,6 +193,7 @@ export function createRouter(terrain, stationAt, store) {
       level: new Int32Array(m), kind: new Int8Array(m), sharp: new Uint8Array(m), hin: new Int8Array(m), hout: new Int8Array(m), laneMask: new Int32Array(m),
       outer: new Int8Array(m * 2), sideTrans: new Uint8Array(m * 2), minSideTrans: new Int8Array(m * 2),
       anyTrans: new Uint8Array(m), cross: new Uint8Array(m), hi: new Int32Array(m), lo: new Int32Array(m),
+      forks: new Uint8Array(m), tx: new Float64Array(m), tz: new Float64Array(m),
     };
     recs.forEach(({ i, rec }, o) => {
       const bs = rec.base, s = rec.sum;
@@ -200,8 +206,11 @@ export function createRouter(terrain, stationAt, store) {
         O.outer[o * 2 + k] = s.outer[k]; O.sideTrans[o * 2 + k] = s.sideTrans[k]; O.minSideTrans[o * 2 + k] = s.minSideTrans[k];
       }
       O.anyTrans[o] = s.anyTrans ? 1 : 0; O.cross[o] = s.cross ? 1 : 0; O.hi[o] = s.hi; O.lo[o] = s.lo;
+      O.forks[o] = s.forks;
+      const tx = DIR_W[bs.hin].x + DIR_W[bs.hout].x, tz = DIR_W[bs.hin].z + DIR_W[bs.hout].z, tl = Math.hypot(tx, tz) || 1;
+      O.tx[o] = tx / tl; O.tz[o] = tz / tl;
     });
-    return { hexes, index, nbr, ground, water, slope, blocked, hDist, n, occ, O, ring };
+    return { hexes, index, nbr, ground, water, slope, blocked, hDist, n, occ, O, ring, hexEdge, E };
   }
 
   /**
@@ -210,23 +219,25 @@ export function createRouter(terrain, stationAt, store) {
    * (no hairpins) unless allowSharp; a route never revisits a hex.
    */
   function search(R, ai, bi, mode, allowSharp) {
-    const { nbr, ground, water, slope, blocked, hDist, n, occ, O, ring } = R;
+    const { nbr, ground, water, slope, blocked, hDist, n, occ, O, ring, hexEdge, E } = R;
     const m = O.m;
     const D7 = 7; // headings 0..5, 6 = at the start (any heading)
     const NF = n * L * D7; // free states: (hex, level, heading)
     const NLANE = m * D7 * LANE_STATES; // lane states: (corridor hex, heading, lane, fresh); level = base level
     const NL0 = NF, NC0 = NF + NLANE; // crossing states: (corridor hex, level, heading, entry side)
-    const N = NC0 + m * L * D7 * 2;
+    const NS0 = NC0 + m * L * D7 * 2; // shared-rail states: (corridor hex, heading, tangent sign, fresh)
+    const N = NS0 + m * D7 * 4;
     const { g, prev, closed, kindOf } = buffers(N);
     const reached = new Uint8Array(n); // hex reached in any state
     const stepW = mode === 'direct' ? LENGTH_WEIGHT : 0;
-    const hMul = stepW + (m > 0 ? MIN_KIND_COST * LANE_FACTOR : MIN_KIND_COST);
+    const hMul = stepW + (m > 0 ? MIN_KIND_COST * Math.min(LANE_FACTOR, SHARED_FACTOR) : MIN_KIND_COST);
     const goalLevel = ground[bi];
 
     const hexOf = (v) => {
       if (v < NL0) return (v / (L * D7)) | 0;
       if (v < NC0) return O.hex[((v - NL0) / (D7 * LANE_STATES)) | 0];
-      return O.hex[((v - NC0) / (L * D7 * 2)) | 0];
+      if (v < NS0) return O.hex[((v - NC0) / (L * D7 * 2)) | 0];
+      return O.hex[((v - NS0) / (D7 * 4)) | 0];
     };
     const onPath = (cur, j) => {
       for (let v = cur; v >= 0; v = prev[v]) if (hexOf(v) === j) return true;
@@ -246,6 +257,12 @@ export function createRouter(terrain, stationAt, store) {
     const freeNode = (j, nl, d) => (j * L + nl) * D7 + d;
     const laneNode = (o, d, l, fresh) => NL0 + ((o * D7 + d) * LANE_SLOTS + laneSlot(l)) * 2 + fresh;
     const crossNode = (o, nl, d, s) => NC0 + ((o * L + nl) * D7 + d) * 2 + (s > 0 ? 0 : 1);
+    const sharedNode = (o, d, sg, fresh) => NS0 + ((o * D7 + d) * 2 + (sg > 0 ? 0 : 1)) * 2 + fresh;
+    const sharedCost = (o) => stepW + KIND_COST[O.kind[o]] * SHARED_FACTOR;
+    // joining or forking off shared rails: within 60 degrees of the trunk (sg x its tangent)
+    const fitsTrunk = (o, d, sg) => sg * (O.tx[o] * DIR_W[d].x + O.tz[o] * DIR_W[d].z) >= 0.5 * HEX_STEP - 1e-6;
+    // a fork curves across the side it leaves on: no lane there, no crossing in the hex
+    const canFork = (o, s) => s !== 0 && !O.cross[o] && O.outer[o * 2 + (s > 0 ? 0 : 1)] === 0;
     const offTie = (j, nl) => (water[j] === 1 ? 0 : Math.abs(ground[j] - nl) * OFF_GROUND_TIE);
 
     // lane rules (see tracks.js): l's slot free; a lane running through a hex may not pass where an
@@ -253,8 +270,9 @@ export function createRouter(terrain, stationAt, store) {
     // crossing there, no other side join on its side, and (from the side) no lane outside it.
     const laneFree = (o, l) => (O.laneMask[o] & (1 << laneSlot(l))) === 0;
     const si = (l) => (l > 0 ? 0 : 1);
-    const canRun = (o, l) => !O.sideTrans[o * 2 + si(l)] || O.minSideTrans[o * 2 + si(l)] > Math.abs(l);
-    const canStationTrans = (o, l) => !O.cross[o] && !O.sideTrans[o * 2 + si(l)];
+    const noFork = (o, l) => (O.forks[o] & (l > 0 ? 1 : 2)) === 0;
+    const canRun = (o, l) => noFork(o, l) && (!O.sideTrans[o * 2 + si(l)] || O.minSideTrans[o * 2 + si(l)] > Math.abs(l));
+    const canStationTrans = (o, l) => noFork(o, l) && !O.cross[o] && !O.sideTrans[o * 2 + si(l)];
     const canSideTrans = (o, l) => canStationTrans(o, l) && O.outer[o * 2 + si(l)] < Math.abs(l);
     const canCross = (o) => !O.cross[o] && !O.anyTrans[o];
 
@@ -313,12 +331,18 @@ export function createRouter(terrain, stationAt, store) {
         lane = slot < M ? slot + 1 : -(slot - M + 1);
         dir = v % D7; o = (v - dir) / D7;
         hi = O.hex[o]; lv = O.level[o]; kindState = 1;
-      } else {
+      } else if (cur < NS0) {
         let v = cur - NC0;
         sIn = v & 1 ? -1 : 1; v >>= 1;
         dir = v % D7; v = (v - dir) / D7;
         lv = v % L; o = (v - lv) / L;
         hi = O.hex[o]; kindState = 2;
+      } else {
+        let v = cur - NS0;
+        fresh = v & 1; v >>= 1;
+        sIn = v & 1 ? -1 : 1; v >>= 1; // here: the route's tangent sign against the trunk's
+        dir = v % D7; o = (v - dir) / D7;
+        hi = O.hex[o]; lv = O.level[o]; kindState = 3;
       }
       if (hi === bi) { goal = cur; break; }
       for (let d = 0; d < 6; d++) {
@@ -332,9 +356,28 @@ export function createRouter(terrain, stationAt, store) {
         if (j < 0 || blocked[j]) continue;
         const oj = occ[j];
         const back = (d + 3) % 6;
+        const ei = hexEdge[hi * 6 + d];
+        if (kindState === 3) {
+          if (ei >= 0) { // ride on along the rails
+            const e = E[ei];
+            if (e.sFrom !== sIn) continue;
+            if (j === bi) freeMoves(cur, gc, j, d, lv, MAX_RISE_LEVELS, turn);
+            else if (oj >= 0) relax(cur, sharedNode(oj, d, e.sTo, 0), gc + sharedCost(oj) + turn, O.kind[oj], j, O.level[oj]);
+          } else if (!fresh && (oj < 0) && canFork(o, O.side[o * 6 + d]) && fitsTrunk(o, d, sIn)) {
+            freeMoves(cur, gc, j, d, lv, MAX_RISE_LEVELS, turn); // fork off onto fresh track
+          }
+          continue;
+        }
         if (kindState === 0) {
           if (oj < 0) { freeMoves(cur, gc, j, d, lv, MAX_RISE_LEVELS, turn); continue; }
           const s = O.side[oj * 6 + back];
+          if (ei >= 0 && hi === ai) { // out of the station on rails already there
+            relax(cur, sharedNode(oj, d, E[ei].sTo, 0), gc + sharedCost(oj) + turn, O.kind[oj], j, O.level[oj]);
+          } else if (ei < 0 && canFork(oj, s) && Math.abs(O.level[oj] - lv) <= MAX_RISE_LEVELS) {
+            // join the trunk at a junction, curving onto it from the side
+            const sg = O.tx[oj] * DIR_W[d].x + O.tz[oj] * DIR_W[d].z >= 0 ? 1 : -1;
+            if (fitsTrunk(oj, d, sg)) relax(cur, sharedNode(oj, d, sg, 1), gc + sharedCost(oj) + turn, O.kind[oj], j, O.level[oj]);
+          }
           // join the corridor as a lane: from the side (the side it runs on), or out of a station
           // hex the base also leaves from (lanes converge only inside a station hex)
           if (!O.sharp[oj] && Math.abs(O.level[oj] - lv) <= MAX_RISE_LEVELS) {
@@ -398,11 +441,27 @@ export function createRouter(terrain, stationAt, store) {
         const o = (x - (x % D7)) / D7;
         return { hex: O.hex[o], level: O.level[o], mode: 'lane', lane: slot < M ? slot + 1 : -(slot - M + 1), kind: KINDS[O.kind[o]], baseRid: O.rid[o], baseIdx: O.idx[o] };
       }
-      let x = (v - NC0) >> 1;
-      x = (x - (x % D7)) / D7;
-      const lvl = x % L, o = (x - lvl) / L;
-      return { hex: O.hex[o], level: lvl, mode: 'cross', kind: KINDS[kindOf[v]], over: lvl > O.level[o], under: lvl < O.level[o] };
+      if (v < NS0) {
+        let x = (v - NC0) >> 1;
+        x = (x - (x % D7)) / D7;
+        const lvl = x % L, o = (x - lvl) / L;
+        return { hex: O.hex[o], level: lvl, mode: 'cross', kind: KINDS[kindOf[v]], over: lvl > O.level[o], under: lvl < O.level[o] };
+      }
+      let x = v - NS0;
+      const fr = x & 1; x >>= 1;
+      const sg = x & 1 ? -1 : 1; x >>= 1;
+      const o = (x - (x % D7)) / D7;
+      return { hex: O.hex[o], o, level: O.level[o], mode: 'shared', kind: KINDS[O.kind[o]], sg, fresh: fr, baseRid: O.rid[o], baseIdx: O.idx[o] };
     });
+    // rails ridden (the polyline to copy) and the sides forks curve across
+    for (let i = 1; i < steps.length; i++) {
+      const a = steps[i - 1], b = steps[i];
+      const d = HEX_DIRS.findIndex((x) => R.hexes[a.hex].q + x.q === R.hexes[b.hex].q && R.hexes[a.hex].r + x.r === R.hexes[b.hex].r);
+      const ei = hexEdge[a.hex * 6 + d];
+      if (ei >= 0 && ((b.mode === 'shared' && !b.fresh) || (i === steps.length - 1 && a.mode === 'shared'))) b.edgeIn = E[ei];
+      if (b.mode === 'shared' && !b.edgeIn) b.forkSides = (b.forkSides || 0) | (O.side[b.o * 6 + (d + 3) % 6] > 0 ? 1 : 2);
+      if (a.mode === 'shared' && !b.edgeIn) a.forkSides = (a.forkSides || 0) | (O.side[a.o * 6 + d] > 0 ? 1 : 2);
+    }
     return finishSteps(R, steps);
   }
 
@@ -443,6 +502,7 @@ export function createRouter(terrain, stationAt, store) {
       const h = { q: s.q, r: s.r, kind: s.kind };
       if (s.mode === 'lane') h.lane = s.lane;
       if (s.mode === 'cross') { if (s.over) h.over = true; else h.under = true; }
+      if (s.mode === 'shared') h.shared = true;
       return h;
     });
     const points = buildPlanPoints(steps, store);
@@ -456,14 +516,14 @@ export function createRouter(terrain, stationAt, store) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
       const x = a[i], y = b[i];
-      if (x.q !== y.q || x.r !== y.r || x.kind !== y.kind || x.level !== y.level || x.mode !== y.mode || (x.lane || 0) !== (y.lane || 0)) return false;
+      if (x.q !== y.q || x.r !== y.r || x.kind !== y.kind || x.level !== y.level || x.mode !== y.mode || (x.lane || 0) !== (y.lane || 0) || !!x.edgeIn !== !!y.edgeIn) return false;
     }
     return true;
   }
 
   function costOf(steps) {
     let c = 0;
-    for (const s of steps) c += hexPrice({ kind: s.kind, lane: s.mode === 'lane' ? s.lane : 0 });
+    for (const s of steps) c += hexPrice({ kind: s.kind, lane: s.mode === 'lane' ? s.lane : 0, shared: s.mode === 'shared' });
     return c;
   }
 
@@ -580,7 +640,29 @@ export function buildPlanPoints(steps, store) {
   for (let i = 0; i < n - 1; i++) {
     const A = steps[i], B = steps[i + 1], la = lane[i], lb = lane[i + 1];
     const kindAt = (k) => (k < POINTS_PER_HEX / 2 ? A.kind : B.kind);
-    if (la && lb && A.baseRid === B.baseRid && A.lane === B.lane) {
+    if (B.edgeIn) {
+      // on rails already there: the very polyline of the track laid first
+      const e = B.edgeIn, rp = store.route(e.rid).points;
+      for (let k = 0; k < POINTS_PER_HEX; k++) { const p = rp[e.k + e.step * k]; pts.push({ x: p.x, y: p.y, z: p.z, kind: kindAt(k) }); }
+    } else if (B.mode === 'shared' || A.mode === 'shared') {
+      // a junction: curve onto (B) or off (A) the trunk, tangent to it at the hex centre
+      const trunk = (st) => {
+        const bp = store.route(st.baseRid).points, k = st.baseIdx * POINTS_PER_HEX, t = tangentAt(bp, k);
+        const a = bp[Math.max(0, k - 1)], b = bp[Math.min(bp.length - 1, k + 1)];
+        return { x: t.x * st.sg * HEX_STEP, z: t.z * st.sg * HEX_STEP, y: (b.y - a.y) * st.sg * POINTS_PER_HEX / 2 };
+      };
+      const P0 = C[i], P1 = C[i + 1];
+      const M0 = A.mode === 'shared' ? trunk(A) : tanAt(i), M1 = B.mode === 'shared' ? trunk(B) : tanAt(i + 1);
+      for (let k = 0; k < POINTS_PER_HEX; k++) {
+        const t = k / POINTS_PER_HEX;
+        pts.push({
+          x: hermite(P0.x, M0.x, P1.x, M1.x, t),
+          y: clampTo(hermite(P0.y, M0.y, P1.y, M1.y, t), P0.y, P1.y),
+          z: hermite(P0.z, M0.z, P1.z, M1.z, t),
+          kind: kindAt(k),
+        });
+      }
+    } else if (la && lb && A.baseRid === B.baseRid && A.lane === B.lane) {
       // running beside the base: its polyline, moved sideways
       for (let k = 0; k < POINTS_PER_HEX; k++) pts.push({ ...offsetPoint(la.bp, la.k + la.sgn * k, la.off), kind: kindAt(k) });
     } else if (!la && lb && A.mode === 'station' && store && stationAlong(store, B, A)) {

@@ -198,3 +198,14 @@ test('article links are https wikipedia only', () => {
   assert.equal(f.safeArticleUrl('javascript:alert(1)'), null);
   assert.equal(f.safeArticleUrl(undefined), null);
 });
+
+test('the tour: short plain steps that each point at a part of the screen', async () => {
+  const { TOUR } = await import('./tour.js');
+  assert.ok(TOUR.length >= 8 && TOUR.length <= 12);
+  for (const st of TOUR) {
+    assert.ok(st.title && st.title.length <= 24, st.title);
+    assert.ok(st.text && st.text.length <= 220, st.title + ' is too long');
+    assert.ok(Array.isArray(st.sel) && st.sel.length >= 1 && st.sel.every((q) => typeof q === 'string' && q.startsWith('.tot-')));
+    assert.ok(!/[$]|thought|hex|ghost/i.test(st.title + st.text), st.title + ' uses a word the player should not see');
+  }
+});

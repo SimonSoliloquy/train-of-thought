@@ -31,11 +31,15 @@ const fail = (reason) => ({ ok: false, reason });
 // Tests that need a bare track pass autoTrain: false.
 // tickets: the game hands out up to ECON.maxTickets routes to find, and ordinary passengers only
 // ride between stations that exist. Tests of the older passenger rules pass tickets: false.
-export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTrain = true, tickets = true }) {
+// surprises: unannounced gold (a find at a new station, a tip on a ticket). Off with tickets: false;
+// tests that count gold exactly pass surprises: false.
+export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTrain = true, tickets = true, surprises = tickets }) {
   const ticketsOn = tickets && spawnThoughts;
   const clockWaits = tickets; // the clock starts with the first build (the game as played)
   const overheadOn = tickets;  // the company's own running cost (the game as played)
   const rng = mulberry32(seed >>> 0);
+  const luck = mulberry32((seed ^ 0x9e3779b9) >>> 0); // its own stream, so surprises never shift anything else
+  let startTitle = '';
   const { on, emit } = createEmitter();
   const toast = (text, tone = 'info') => emit('toast', { text, tone });
 
@@ -202,7 +206,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     p.in = Math.max(0, ECON.paydaySeconds - paydayElapsed);
     p.pending = p.income + p.fares - p.upkeep;
     p.forecast = p.pending + ((incomeRate() - upkeepRate()) * p.in) / 60;
-    state.score = scoreFor(state.delivered, state.stations.size, state.uniqueLinks);
+    state.score = scoreFor(state.delivered, state.stations.size, state.uniqueLinks, ticketsDone);
   }
 
   function networkChanged() {
@@ -275,6 +279,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     try {
       const article = await wiki.randomStart();
       const title = article.title;
+      startTitle = title;
       const { revealed: r0 } = world.placeStart(title);
       const station = addStation(title, article);
       const { valid, stubs } = await ghostCandidates(article);
@@ -387,6 +392,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
       // A new track comes with its train: it starts running at once, at no extra charge.
       if (startTrain) doUpgrade(track.id, undefined, true);
       if (bonus) emit('routeBonus', bonus);
+      if (station) stationSurprise(toTitle);
       checkGoal();
       return ok();
     } finally {
@@ -811,11 +817,56 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     return th;
   }
 
+  // ------------------------------------------------------------ surprises
+  const FINDS = [
+    'A gold seam struck while digging',
+    'A patron endowed the station',
+    'A forgotten mail contract turned up',
+    'Old rails salvaged and sold',
+    'The town threw a collection',
+    'A crate of unclaimed freight sold',
+  ];
+  const JACKPOTS = ['A lost payroll chest unearthed', 'A railway baron backs the line'];
+
+  function paySurprise(station, kind, text, base) {
+    const amount = Math.max(1, Math.round(base));
+    state.money += amount;
+    emit('surprise', { station, kind, text, amount });
+    return amount;
+  }
+
+  /** A new station sometimes turns something up. Nothing announces it beforehand. */
+  function stationSurprise(title) {
+    if (!surprises || state.phase !== 'running') return 0;
+    const roll = luck();
+    const pick = luck();
+    const size = luck();
+    if (roll < ECON.surpriseJackpotChance) {
+      return paySurprise(title, 'jackpot', JACKPOTS[Math.floor(pick * JACKPOTS.length)], ECON.surpriseJackpot * state.inflation);
+    }
+    if (roll < ECON.surpriseJackpotChance + ECON.surpriseFindChance) {
+      const base = ECON.surpriseFindMin + (ECON.surpriseFindMax - ECON.surpriseFindMin) * size;
+      return paySurprise(title, 'find', FINDS[Math.floor(pick * FINDS.length)], base * state.inflation);
+    }
+    return 0;
+  }
+
+  /** A ticket's passenger sometimes tips on arrival. */
+  function ticketSurprise(t, reward) {
+    if (!surprises || state.phase !== 'running') return 0;
+    if (luck() >= ECON.surpriseTipChance) return 0;
+    return paySurprise(t.to, 'tip', 'A grateful passenger tipped', reward * ECON.surpriseTipFraction);
+  }
+
   // ------------------------------------------------------------ tickets
   let nextTicketId = 1;
   let ticketsIssued = 0;
   let pendingTickets = 0;
   let ticketGap = 2; // seconds until the next ticket may be drawn
+  // How far the next ticket reaches. It follows how the player is doing, not the clock: quick
+  // finishes push it out, tickets that run out pull it back in.
+  let ticketSkill = ECON.ticketSkillStart;
+  const clampSkill = (x) => Math.min(ECON.ticketMaxLinks, Math.max(1, x));
   const ticketBase = new Map(); // ticket id -> full reward when issued
   const ticketPaths = new Map(); // ticket id -> the chain of articles it was drawn along (the surveyor's map)
   const surveyorCost = () => Math.round(ECON.surveyorCost * state.inflation);
@@ -844,17 +895,19 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
       const reward = t.reward;
       state.money += reward;
       ticketsDone++;
+      ticketSkill = clampSkill(ticketSkill + (t.time >= t.timeMax / 2 ? ECON.ticketSkillFast : ECON.ticketSkillSlow));
       ticketGap = ECON.ticketGapSeconds;
       any = true;
       emit('ticketDone', { ticket: t, reward });
+      ticketSurprise(t, reward);
     }
     if (any) checkGoal();
   }
 
-  function addTicket(from, to, fromDescription, toDescription, links, path = null) {
-    const base = (ECON.ticketBase + ECON.ticketPerLink * links) * state.inflation;
-    const timeMax = ECON.ticketSecondsBase + ECON.ticketSecondsPerLink * links;
-    const t = { id: nextTicketId++, from, to, fromDescription, toDescription, links, reward: Math.round(base), time: timeMax, timeMax, surveyCost: surveyorCost(), surveying: null, hint: null };
+  function addTicket(from, to, fromDescription, toDescription, links, path = null, express = false) {
+    const base = (ECON.ticketBase + ECON.ticketPerLink * links) * state.inflation * (express ? ECON.expressRewardMult : 1);
+    const timeMax = Math.round((ECON.ticketSecondsBase + ECON.ticketSecondsPerLink * links) * (express ? ECON.expressTimeMult : 1));
+    const t = { id: nextTicketId++, from, to, fromDescription, toDescription, links, express: !!express, reward: Math.round(base), time: timeMax, timeMax, surveyCost: surveyorCost(), surveying: null, hint: null };
     ticketBase.set(t.id, base);
     if (Array.isArray(path) && path.length >= 2) ticketPaths.set(t.id, path.slice());
     state.tickets.push(t);
@@ -883,7 +936,12 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
    */
   async function drawTicket() {
     const r = mulberry32(Math.floor(rng() * 4294967296));
-    const k = Math.min(ECON.ticketMaxLinks, 1 + Math.floor((ticketsIssued + 1) / 2));
+    // Every draw takes the same three numbers, so the stream stays in step whatever they decide.
+    const shorter = r() < ECON.ticketShorterChance;
+    const express = r() < ECON.expressTicketChance && ticketsIssued > 0 && surprises;
+    let k = Math.floor(clampSkill(ticketSkill));
+    if (shorter && k > 1) k--;
+    if (ticketsIssued === 0) k = 1;
     pendingTickets++;
     try {
       for (let tries = 0; tries < 6; tries++) {
@@ -924,7 +982,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
         if (state.phase !== 'running' || state.tickets.length >= ECON.maxTickets) return;
         if (state.stations.has(last.title) || (bothNew && state.stations.has(from))) continue;
         if (state.tickets.some((t) => t.to === last.title || t.from === last.title)) continue;
-        addTicket(from, last.title, fromDescription, last.stub.description || '', links, path);
+        addTicket(from, last.title, fromDescription, last.stub.description || '', links, path, express);
         return;
       }
     } catch {
@@ -994,6 +1052,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
       t.reward = Math.round(liveFare(ticketBase.get(t.id), t.time, t.timeMax));
       if (t.time <= 0) {
         removeTicket(t);
+        ticketSkill = clampSkill(ticketSkill - ECON.ticketSkillExpired);
         ticketGap = ECON.ticketGapSeconds;
         emit('ticketExpired', { ticket: t });
       }
@@ -1056,6 +1115,8 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
       time: state.time,
       delivered: state.delivered,
       stations: state.stations.size,
+      tickets: ticketsDone,
+      start: startTitle,
     });
   }
 

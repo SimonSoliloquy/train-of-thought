@@ -743,10 +743,9 @@ test('the clock starts with the first build: then time passes, paydays come and 
   assert.equal(paydays.length, 0);
   assert.equal(game.state.inflation, 1);
 
-  // build to a place that is not a ticket destination, so a ticket is still open afterwards
+  // build one stop out: even if that meets a ticket, the others are still open afterwards
   const taken = new Set(game.state.tickets.map((t) => t.to));
-  const target = ['N0.0', 'N0.1', 'N0.2'].find((t) => !taken.has(t));
-  assert.ok(target);
+  const target = ['N0.0', 'N0.1', 'N0.2'].find((t) => !taken.has(t)) || 'N0.0';
   const res = await game.build('N0', target);
   assert.equal(res.ok, true);
   const open = game.state.tickets[0];
@@ -818,4 +817,84 @@ test('surveyor: for a fee, shows the next article to build towards a ticket, one
   const blind = game._debug.addTicket('N0', 'N0.0.0', '', '', 2);
   assert.equal((await game.buySurveyor(blind.id)).ok, false);
   assert.equal(game.state.money, 500);
+});
+
+test('surprises: unannounced gold at new stations and on tickets, paid at once, never without the option', async () => {
+  const run = async (surprises) => {
+    const wiki = createFakeWiki(treeGraph(4, 4), { start: 'N0' });
+    const world = createFakeWorld();
+    const game = createGame({ wiki, world, seed: 3, spawnThoughts: false, surprises });
+    const got = [];
+    game.on('surprise', (p) => got.push(p));
+    let goals = 0;
+    game.on('goalDone', (p) => { goals += p.reward; });
+    await game.start();
+    game.state.money = 1e7;
+    let paid = 0;
+    const kids = (n) => [0, 1, 2, 3].map((i) => `${n}.${i}`);
+    for (const a of kids('N0')) {
+      for (const [from, to] of [['N0', a], ...kids(a).map((b) => [a, b]), ...kids(a).flatMap((b) => kids(b).map((c) => [b, c]))]) {
+        const before = game.state.money;
+        const goalsBefore = goals;
+        const q = game.quoteBuild(from, to).cheap;
+        const res = await game.build(from, to);
+        assert.equal(res.ok, true, res.reason);
+        const mine = got.filter((g) => g.station === to);
+        const extra = mine.reduce((s, g) => s + g.amount, 0);
+        assert.equal(game.state.money, before - q.total + extra + (goals - goalsBefore), 'a surprise is exactly the gold it says');
+        paid += extra;
+      }
+    }
+    return { got, paid };
+  };
+  const off = await run(false);
+  assert.equal(off.got.length, 0);
+  const on = await run(true);
+  assert.ok(on.got.length >= 5 && on.got.length <= 40, `84 stations, ${on.got.length} surprises`);
+  for (const g of on.got) {
+    assert.ok(['find', 'jackpot'].includes(g.kind));
+    assert.ok(g.amount > 0 && typeof g.text === 'string' && g.text.length > 0);
+  }
+  assert.ok(on.paid > 0);
+});
+
+test('tickets scale with the player: quick finishes reach further, tickets that run out pull back in', async () => {
+  const wiki = createFakeWiki(treeGraph(6, 3), { start: 'N0' });
+  const world = createFakeWorld();
+  const game = createGame({ wiki, world, seed: 21, surprises: false });
+  const added = [];
+  game.on('ticketAdded', (p) => added.push(p.ticket));
+  await game.start();
+  game.state.money = 1e7;
+  await runUntil(game, () => game.state.tickets.length >= ECON.maxTickets, 2000);
+  assert.equal(added[0].links, 1, 'the first ticket is one link away');
+  assert.ok(added.every((t) => t.links <= ECON.ticketSkillStart), 'early tickets stay close');
+  assert.ok(added.every((t) => t.express === false || t.express === true));
+
+  // meet tickets quickly, several times over: the tickets that replace them reach further
+  let met = 0;
+  game.on('ticketDone', () => met++);
+  for (let round = 0; round < 12 && met < 6; round++) {
+    const t = game.state.tickets[0];
+    if (!t) { await runUntil(game, () => game.state.tickets.length > 0, 600); continue; }
+    // walk the tree from the nearest built ancestor down to the destination
+    const parts = t.to.split('.');
+    for (let i = 1; i < parts.length; i++) {
+      const from = parts.slice(0, i).join('.');
+      const to = parts.slice(0, i + 1).join('.');
+      if (!game.state.stations.has(to)) assert.equal((await game.build(from, to)).ok, true);
+    }
+    await runUntil(game, () => game.state.tickets.length >= ECON.maxTickets, 600);
+  }
+  assert.ok(met >= 4, `met ${met}`);
+  const late = added.slice(-3);
+  assert.ok(Math.max(...late.map((t) => t.links)) >= 3, `later tickets reach further: ${late.map((t) => t.links)}`);
+  assert.ok(added.every((t) => t.links <= ECON.ticketMaxLinks));
+
+  // an express ticket pays more on a shorter clock
+  const ex = game._debug.addTicket('N0', 'N0.2.2.2.2.2.2', '', '', 2, null, true);
+  const plain = (ECON.ticketBase + ECON.ticketPerLink * 2) * game.state.inflation;
+  assert.equal(ex.express, true);
+  assert.equal(ex.reward, Math.round(plain * ECON.expressRewardMult));
+  assert.equal(ex.timeMax, Math.round((ECON.ticketSecondsBase + ECON.ticketSecondsPerLink * 2) * ECON.expressTimeMult));
 });

@@ -256,6 +256,8 @@
  * @property {string} toDescription
  * @property {number} links      how many links the game knows a route to need, counted from the player's
  *                               network (a hint of distance, not the route)
+ * @property {boolean} express   an express ticket: ECON.expressRewardMult the reward, on a shorter clock. They turn up
+ *                               unannounced; the UI stamps them "Express".
  * @property {number} reward     whole gold paid if met now; falls towards half as time runs out
  * @property {number} time       game seconds left before the ticket is withdrawn (no penalty)
  * @property {number} timeMax
@@ -325,12 +327,15 @@
  *   'ticketDone'       { ticket: Ticket, reward: number }     paid at once
  *   'ticketExpired'    { ticket: Ticket }
  *   'ticketHint'       { ticket: Ticket, hint: {from: string, to: string}|null }   a surveyor reported, or their advice was used
+ *   'surprise'         { station: string, kind: 'find'|'jackpot'|'tip', text: string, amount: number }   unannounced gold,
+ *                      already paid: a new station turned something up, or a ticket's passenger tipped
  *   'thoughtLost'      { thought: Thought }
  *   'trackUpgraded'    { track: Track, train: Train }
  *   'trainsChanged'    { }
  *   'payday'           { amount: number, income: number, fares: number, upkeep: number }
  *   'toast'            { text: string, tone: 'info'|'good'|'bad' }
- *   'gameOver'         { score: number, time: number, delivered: number, stations: number }
+ *   'gameOver'         { score: number, time: number, delivered: number, stations: number, tickets: number, start: string }
+ *                      (tickets met, and the article the run started on)
  *
  * @typedef {Object} Game
  * @property {GameState} state

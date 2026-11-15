@@ -11,6 +11,7 @@ import { createToasts, createRideLabel } from './notes.js';
 import { createScreens } from './screens.js';
 import { createSound } from './sound.js';
 import { createTour } from './tour.js';
+import { fmtInt } from './format.js';
 
 const TICK = 0.1; // seconds between live-number refreshes
 const SPEED_KEYS = { 1: 1, 2: 2, 3: 4 };
@@ -32,7 +33,7 @@ export function createUI({ root, game, renderer, wiki }) {
   const sound = createSound({ game });
   const tour = createTour(ctx);
 
-  // Layout: gold readout top left with the tickets under it, speed top right, the goal line top
+  // Layout: gold counter and payday gauge top left with the tickets under it, the speed dial top right, the goal plate top
   // centre (its own row when narrow). The stage holds the notes (riding label, toasts). The
   // station's real Wikipedia article is a translucent panel down the right edge that opens only
   // when the player clicks a station; its links are how the player picks where to build. No build button: the 3D view
@@ -51,6 +52,13 @@ export function createUI({ root, game, renderer, wiki }) {
   const on = (name, fn) => game.on(name, fn);
 
   on('toast', (e) => toasts.show(e.text, e.tone));
+  // Unannounced gold (already paid; the map shows the burst): a telegram, and the counter lights up.
+  on('surprise', (e) => {
+    if (!e) return;
+    toasts.show(`${e.text || 'A surprise'}: +${fmtInt(e.amount)} gold`, 'good', e.kind === 'jackpot' ? 5000 : 3500);
+    hud.pulse();
+    dirty.hud = true;
+  });
   on('started', (e) => {
     dirty.tickets = dirty.hud = dirty.goal = true;
     screens.render();
@@ -64,6 +72,8 @@ export function createUI({ root, game, renderer, wiki }) {
       dirty.builder = dirty.search = dirty.goal = true;
     });
   }
+  // a short puff of steam from the gold counter whenever something is built or upgraded
+  for (const name of ['trackBuilt', 'trackUpgraded']) on(name, () => hud.puff());
   for (const name of ['thoughtDelivered', 'thoughtLost']) on(name, () => { dirty.goal = true; });
   for (const name of ['ticketAdded', 'ticketExpired', 'ticketHint']) on(name, () => { dirty.tickets = dirty.search = true; });
   on('ticketDone', (e) => {

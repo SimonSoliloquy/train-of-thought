@@ -46,9 +46,9 @@ export function incomePerMinFor(kind, uniqueLinks) {
   return isSpecialKind(kind) ? 0 : uniqueLinks * ECON.linkIncomePerUniqueLinkPerMin;
 }
 
-export function scoreFor(delivered, stations, uniqueLinks) {
+export function scoreFor(delivered, stations, uniqueLinks, tickets = 0) {
   const s = ECON.score;
-  return Math.round(delivered * s.perDelivered + stations * s.perStation + uniqueLinks * s.perUniqueLink);
+  return Math.round(delivered * s.perDelivered + stations * s.perStation + uniqueLinks * s.perUniqueLink + tickets * (s.perTicket || 0));
 }
 
 const clamp01 = (x) => Math.min(1, Math.max(0, x));

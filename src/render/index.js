@@ -305,6 +305,11 @@ export function createRenderer({ container, game, world }) {
       bigBurst(pos, `+${gold(p.amount)} route opened`, who);
     } else bigBurst(pos, '', '');
   });
+  on('surprise', (p) => {
+    const pos = placementPos(p.station);
+    if (!pos || !Number.isFinite(p.amount) || p.amount <= 0) return;
+    bigBurst(pos, `+${gold(p.amount)}`, p.text || 'A surprise');
+  });
   on('ticketDone', (p) => {
     const t = p.ticket;
     const pos = t && placementPos(t.to);

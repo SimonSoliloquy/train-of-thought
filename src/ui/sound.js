@@ -30,7 +30,7 @@ export function createLimiter({ gaps = {}, defaultGap = 80, globalGap = 30, now 
 }
 
 const GAPS = {
-  coin: 400, thud: 400, ping: 300, chime: 70, flourish: 250, thunk: 200, whistle: 250, fall: 350, tick: 400,
+  coin: 400, thud: 400, ping: 300, chime: 70, flourish: 250, thunk: 200, whistle: 250, fall: 350, tick: 400, surprise: 300,
 };
 
 function readMuted() {
@@ -177,6 +177,17 @@ export function createSound({ game }) {
     fall() {
       tone({ type: 'sine', freq: 420, freq2: 250, dur: 0.38, vol: 0.09 });
     },
+    /** Unannounced gold: a bright coin-and-bell flourish, longer and higher for a jackpot. */
+    surprise(kind) {
+      const big = kind === 'jackpot';
+      const notes = big ? [0, 4, 7, 12, 16, 19, 24] : [0, 7, 12];
+      const root = big ? 659.25 : 783.99;
+      notes.forEach((st, i) => tone({ type: 'square', freq: root * Math.pow(2, st / 12), at: i * (big ? 0.06 : 0.07), dur: 0.12, vol: 0.05 }));
+      const end = notes.length * (big ? 0.06 : 0.07);
+      // the bell: a clean high partial with a long tail
+      tone({ type: 'sine', freq: root * 4, at: end, dur: big ? 1.1 : 0.6, vol: big ? 0.09 : 0.06 });
+      tone({ type: 'sine', freq: root * 6.01, at: end, dur: big ? 0.8 : 0.4, vol: 0.025 });
+    },
     tick() {
       tone({ type: 'square', freq: 880, dur: 0.05, vol: 0.06, attack: 0.002 });
     },
@@ -201,6 +212,7 @@ export function createSound({ game }) {
   on('ticketDone', () => play('flourish', 'goal'));
   on('ticketAdded', () => play('ping'));
   on('ticketExpired', () => play('fall'));
+  on('surprise', (e) => play('surprise', e && e.kind));
 
   let lastTick = null;
   return {

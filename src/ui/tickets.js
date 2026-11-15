@@ -1,4 +1,4 @@
-// The tickets: at most three small rows, always visible under the gold readout. Rows are rebuilt on
+// The tickets: at most three punched railway tickets, always visible under the gold readout. Rows are rebuilt on
 // ticket events; the reward and the time bar are refreshed from update() a few times a second.
 import { ECON } from '../config.js';
 import { h, setText, setClass, setWidth } from './dom.js';
@@ -12,16 +12,26 @@ export function createTickets(ctx) {
   const rows = new Map(); // ticket id -> { el, refs, t, leaving, timer }
 
   function make(t) {
-    const route = h('span', { class: 'tot-tk-route' });
-    const reward = h('b', { class: 'tot-tk-reward' });
+    // A punched railway ticket: from and to stamped on the card, the reward on the stub past the
+    // perforation, and the time left as a strip along the bottom.
+    const from = h('span', { class: 'tot-tk-from' });
+    const to = h('span', { class: 'tot-tk-to' });
+    const route = h('div', { class: 'tot-tk-route' },
+      h('div', { class: 'tot-tk-line' }, h('span', { class: 'tot-tk-k', text: 'From' }), from),
+      h('div', { class: 'tot-tk-line' }, h('span', { class: 'tot-tk-k', text: 'To' }), to));
+    const amount = h('b', { class: 'tot-tk-amt' });
+    const reward = h('div', { class: 'tot-tk-reward' }, amount, h('span', { class: 'tot-tk-unit', text: 'gold' }));
     const how = h('div', { class: 'tot-tk-how' });
+    // An express ticket (double reward, shorter clock) carries a stamp on its stub.
+    const express = h('span', { class: 'tot-tk-express', hidden: true, text: 'Express', title: 'Express: double reward, less time' });
     const fill = h('div', { class: 'tot-bar-fill' });
     // The surveyor: pay to be shown the next article to build towards this ticket.
     const survey = h('button', { class: 'tot-tk-survey', type: 'button' });
     const hint = h('div', { class: 'tot-tk-hint', hidden: true });
     const row = h('div', { class: 'tot-panel tot-ticket' },
-      h('div', { class: 'tot-tk-top' }, route, reward), how, hint, survey, h('div', { class: 'tot-bar tot-tk-bar' }, fill));
-    const r = { el: row, refs: { route, reward, how, fill, survey, hint }, t, leaving: false, timer: 0, busy: false };
+      h('div', { class: 'tot-tk-main' }, route, how, hint, survey, h('div', { class: 'tot-bar tot-tk-bar' }, fill)),
+      h('div', { class: 'tot-tk-stub' }, express, reward));
+    const r = { el: row, refs: { from, to, amount, how, fill, survey, hint, express }, t, leaving: false, timer: 0, busy: false };
     survey.addEventListener('click', (e) => {
       e.stopPropagation();
       if (r.leaving || r.busy) return;
@@ -55,9 +65,13 @@ export function createTickets(ctx) {
 
   function paint(r) {
     const v = ticketView(r.t, (title) => state.stations.has(title));
-    setText(r.refs.route, v.route);
+    setText(r.refs.from, r.t.from);
+    setText(r.refs.to, r.t.to);
     setText(r.refs.how, v.how);
-    if (!r.leaving) setText(r.refs.reward, v.reward);
+    const ex = !!r.t.express;
+    if (r.refs.express.hidden === ex) r.refs.express.hidden = !ex;
+    setClass(r.el, 'express', ex);
+    if (!r.leaving) setText(r.refs.amount, v.reward.replace(/ gold$/, ''));
     setWidth(r.refs.fill, v.fraction);
     if (r.refs.fill._tone !== v.tone) {
       r.refs.fill.className = 'tot-bar-fill ' + v.tone;
@@ -109,7 +123,7 @@ export function createTickets(ctx) {
     if (!r) return;
     r.leaving = true;
     r.el.classList.add('done');
-    setText(r.refs.reward, '+' + Math.round(e.reward || 0).toLocaleString('en-US') + ' gold');
+    setText(r.refs.amount, '+' + Math.round(e.reward || 0).toLocaleString('en-US'));
     setClass(r.el, 'go', false);
     r.timer = setTimeout(() => drop(e.ticket.id), LEAVE_MS);
   }

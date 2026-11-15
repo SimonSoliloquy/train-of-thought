@@ -64,18 +64,36 @@ export const ECON = {
   goalRewardBase: 40,
   // Tickets: routes to find and build. Never more than maxTickets at once.
   maxTickets: 3,
-  ticketBase: 150,                  // a ticket is the big bonus: reward = (base + perLink * links) * inflation when issued
-  ticketPerLink: 430,
-  ticketMaxLinks: 4,
+  ticketBase: 130,                  // a ticket is the big bonus: reward = (base + perLink * links) * inflation when issued
+  ticketPerLink: 370,
+  ticketMaxLinks: 5,                // the furthest a ticket ever reaches; how far it really reaches follows the player's skill
   ticketSecondsBase: 420,           // time before a ticket is withdrawn
   ticketSecondsPerLink: 240,
   surveyorCost: 250,                 // gold (times inflation) for a surveyor to show the next article towards a ticket
   surveyorSeconds: 60,              // how long a surveyor works before revealing what they found
+  // Tickets scale with the player: a skill number sets how many links away the next ticket is.
+  ticketSkillStart: 2,              // links away, once the very first ticket (always one link) is out
+  ticketSkillFast: 0.6,             // gained for a ticket met with more than half its time left
+  ticketSkillSlow: 0.3,             // gained for a ticket met later than that
+  ticketSkillExpired: 0.7,          // lost when a ticket runs out
+  ticketShorterChance: 0.3,         // share of tickets drawn one link shorter than the skill allows, for variety
+  // Express tickets turn up unannounced: a bigger prize on a shorter clock.
+  expressTicketChance: 0.2,
+  expressRewardMult: 2,
+  expressTimeMult: 0.6,
+  // Surprises: gold nobody promised, paid at once (amounts times inflation).
+  surpriseFindChance: 0.16,         // a new station turns something up
+  surpriseFindMin: 40,
+  surpriseFindMax: 160,
+  surpriseJackpotChance: 0.04,      // a new station turns up something big
+  surpriseJackpot: 450,
+  surpriseTipChance: 0.15,          // a ticket's passenger tips on arrival
+  surpriseTipFraction: 0.3,         // of the ticket's reward
   ticketGapSeconds: 20,              // pause before a new ticket replaces one that is gone
   paydaySeconds: 10,                // money arrives in one lump this often
   bankruptcyGraceSeconds: 45,
   dwellSeconds: 3,
-  score: { perDelivered: 10, perStation: 25, perUniqueLink: 0.1 },
+  score: { perDelivered: 10, perStation: 25, perUniqueLink: 0.1, perTicket: 60 },
 };
 
 // speed is world units per second along the track centreline.

@@ -1,6 +1,21 @@
 // Full-window states: the automatic start (loading / error) and the game-over screen.
 import { h, clear } from './dom.js';
 import { fmtInt, fmtDuration } from './format.js';
+import { saveRun } from './board.js';
+
+/** "4:07": a run's length on the board. */
+function clock(sec) {
+  const t = Math.max(0, Math.round(Number.isFinite(sec) ? sec : 0));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+}
+
+function storage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null; // blocked: the board is not kept
+  }
+}
 
 export function createScreens(ctx) {
   const { game, state } = ctx;
@@ -9,6 +24,7 @@ export function createScreens(ctx) {
   let error = '';
   let over = null; // payload of the gameOver event, if it arrived
   let shownKey = '';
+  let board = null; // { runs, rank, best } once this run is on the board
 
   const isOver = () => state.phase === 'over' || state.phase === 'gameOver';
 
@@ -59,9 +75,29 @@ export function createScreens(ctx) {
           stat('Passengers delivered', fmtInt(d.delivered)),
           stat('Stations', fmtInt(d.stations)),
           stat('Score', fmtInt(d.score))),
+        boardView(),
         h('button', { class: 'tot-btn tot-btn-primary tot-btn-big', type: 'button', text: 'New run', onClick: () => location.reload() }),
         h('p', { class: 'tot-over-credit' }, 'Built by ',
           h('a', { href: 'https://simonsoliloquy.com', target: '_blank', rel: 'noopener', text: 'simonsoliloquy.com' }))));
+  }
+
+  /** The best runs on this machine, this run's row picked out. */
+  function boardView() {
+    if (!board || !board.runs.length) return null;
+    const head = h('tr', {}, ...['#', 'Score', 'Stations', 'Tickets', 'Time', 'Started at'].map((t) => h('th', { scope: 'col', text: t })));
+    const rows = board.runs.map((r, i) => h('tr', { class: i + 1 === board.rank ? 'mine' : null },
+      h('td', { text: String(i + 1) }),
+      h('td', { class: 'num', text: fmtInt(r.score) }),
+      h('td', { class: 'num', text: fmtInt(r.stations) }),
+      h('td', { class: 'num', text: fmtInt(r.tickets) }),
+      h('td', { class: 'num', text: clock(r.time) }),
+      h('td', { class: 'start', text: r.start || '', title: r.start || '' })));
+    return h('div', { class: 'tot-board' },
+      h('div', { class: 'tot-board-head' },
+        h('h2', { text: 'Best runs on this machine' }),
+        board.best ? h('span', { class: 'tot-board-best', text: 'New best' }) : null),
+      h('table', {}, h('thead', {}, head), h('tbody', {}, rows)),
+      board.rank ? null : h('p', { class: 'tot-note', text: 'This run did not make the board.' }));
   }
 
   /** Redraw only when what is on screen would change. */
@@ -77,6 +113,7 @@ export function createScreens(ctx) {
 
   function onGameOver(payload) {
     over = payload || null;
+    if (over && !board) board = saveRun(storage(), over); // once per run
     render(true);
   }
 

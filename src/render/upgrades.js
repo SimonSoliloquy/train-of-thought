@@ -1,9 +1,10 @@
 // Upgrade tags: a clickable chip floating over the middle of every track that can still be
-// upgraded, in plain words: "Add train · $120" on bare track, then "Upgrade · Express $327",
-// then the final pair "Freight $520" / "Bullet $520", each with its blurb. Bright amber when
+// upgraded, in plain words: "Add train · 120 gold" on bare track, then "Upgrade · Express 327 gold",
+// then the final pair "Freight 520 gold" / "Bullet 520 gold", each with its blurb. Bright amber when
 // affordable, dim when not. The quotes come from game.quoteUpgrade. While the goal is to put
 // the first train on a track, that track's tag pulses under a bouncing arrow.
 import { sampleRoute } from './rail.js';
+import { gold } from './format.js';
 
 export const TAG_REQUERY = 0.5; // seconds between quote refreshes
 export const TAG_LIFT = 0.55;   // tag sits this far above the rail (or the hill over a tunnel)
@@ -31,7 +32,6 @@ export function quoteOptions(quote) {
   }));
 }
 
-function money(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
 
 /** What each chip of a tag says, as an instruction. level: the track's level (0 = bare). Pure. */
 export function tagChoices(level, options) {
@@ -39,13 +39,13 @@ export function tagChoices(level, options) {
   return options.map((o) => {
     let title, sub;
     if (one && (level === 0 || (level == null && o.typeId === 'local'))) {
-      title = `Add train \u00b7 ${money(o.cost)}`;
+      title = `Add train \u00b7 ${gold(o.cost)}`;
       sub = o.blurb ? `${o.name} \u00b7 ${o.blurb}` : o.name;
     } else if (one) {
-      title = `Upgrade \u00b7 ${o.name} ${money(o.cost)}`;
+      title = `Upgrade \u00b7 ${o.name} ${gold(o.cost)}`;
       sub = o.blurb;
     } else {
-      title = `${o.name} ${money(o.cost)}`;
+      title = `${o.name} ${gold(o.cost)}`;
       sub = o.blurb;
     }
     return { ...o, title, sub };

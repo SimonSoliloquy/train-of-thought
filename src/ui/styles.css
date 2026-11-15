@@ -82,7 +82,7 @@
   padding: 6px 12px 5px;
 }
 .tot-hud-pay { display: contents; }
-.tot-gold-v { grid-row: 1 / 3; font: 700 24px/1.1 var(--mono); color: var(--amber); }
+.tot-gold-v { grid-row: 1 / 3; font: 700 20px/1.1 var(--mono); color: var(--amber); }
 .tot-hud.neg .tot-gold-v { color: var(--red); }
 .tot-next { grid-column: 2; font: 700 14px/1.2 var(--mono); color: var(--green); white-space: nowrap; }
 .tot-next.neg { color: var(--red); }
@@ -142,105 +142,61 @@
 
 /* ---------------------------------------------------------------- stage */
 .tot-stage { position: absolute; left: 12px; right: 12px; top: 70px; bottom: 12px; pointer-events: none; }
-.tot-more { padding: 6px 12px; font-size: 11px; color: var(--faint); }
 
-/* ---------------------------------------------------------------- passenger queue */
-.tot-queue { position: absolute; left: 0; top: 0; max-height: 100%; display: flex; flex-direction: column; z-index: 2; }
-.tot-queue.open { width: 304px; }
-.tot .tot-queue-head {
-  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 12px; border: 0; background: none;
-  text-align: left; font-weight: 600; font-size: 12.5px; border-radius: 8px; white-space: nowrap;
+/* ---------------------------------------------------------------- tickets (under the gold readout) */
+.tot-tickets {
+  position: absolute; left: 10px; top: 72px; width: 268px; z-index: 3;
+  display: flex; flex-direction: column; gap: 5px; pointer-events: none;
 }
-.tot .tot-queue-head:hover { background: rgba(255, 255, 255, 0.07); }
-.tot-queue.open .tot-queue-head { border-bottom: 1px solid var(--edge); border-radius: 8px 8px 0 0; }
-.tot-caret { color: var(--dim); font-size: 11px; margin-left: auto; }
-.tot-queue-body { display: none; overflow-y: auto; min-height: 0; }
-.tot-queue.open .tot-queue-body { display: block; }
-.tot-mood { padding: 6px 12px; font-size: 11.5px; color: var(--dim); border-bottom: 1px solid var(--edge); }
-.tot-mood b.ok { color: var(--green); }
-.tot-mood b.warn { color: var(--amber); }
-.tot-mood b.bad { color: var(--red); }
-.tot-trow { padding: 7px 12px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); cursor: pointer; }
-.tot-trow:hover { background: rgba(255, 255, 255, 0.06); }
-.tot-trow-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.tot-to { flex: 1 1 auto; min-width: 0; color: var(--amber); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tot-fare { flex: none; font: 600 11.5px var(--mono); color: var(--green); }
-.tot-where { font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tot-trow-foot { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
-.tot-bar-patience { flex: none; width: 64px; margin: 0; }
-.tot-status { flex: 1 1 auto; min-width: 0; text-align: right; font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tot-status-riding, .tot-status-coming { color: var(--green); }
-.tot-status-train { color: var(--amber); }
-.tot-status-link { color: var(--blue); }
-.tot-status-far { color: var(--faint); }
+.tot-ticket { padding: 5px 10px 6px; border-left: 3px solid var(--blue); transition: background 0.3s; }
+.tot-ticket.go { cursor: pointer; }
+.tot-ticket.go:hover { background: rgba(30, 40, 58, 0.92); }
+.tot-tk-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.tot-tk-route { flex: 1 1 auto; min-width: 0; font-weight: 700; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tot-tk-reward { flex: none; font: 700 12px var(--mono); color: var(--green); }
+.tot-tk-how { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tot-tk-bar { height: 3px; margin: 4px 0 0; }
+.tot-ticket.done { border-left-color: var(--green); background: rgba(70, 170, 100, 0.55); }
 
-/* ---------------------------------------------------------------- side column: build card above station card */
-.tot-side {
-  position: absolute; right: 0; top: 0; bottom: 0; width: 340px; display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+/* ---------------------------------------------------------------- link list (right edge, only with a station selected) */
+.tot-linklist {
+  position: absolute; right: 10px; top: 48px; bottom: 12px; width: 230px; z-index: 3;
+  display: flex; flex-direction: column; overflow: hidden; padding: 8px 0 0;
 }
-.tot-card { position: relative; flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 8px; }
-.tot-sign {
-  position: relative; flex: none; margin: 8px 8px 0; padding: 10px 12px;
-  background: var(--sign); color: #fff; border-radius: 5px;
-  box-shadow: inset 0 0 0 2px var(--sign), inset 0 0 0 3.5px rgba(255, 255, 255, 0.9);
-}
-.tot-sign.ghost { background: #1b2230; box-shadow: inset 0 0 0 2px #1b2230, inset 0 0 0 3.5px rgba(255, 255, 255, 0.55); }
-.tot-sign.ghost h2 { color: #dfe8f5; }
-.tot-sign h2 { font-size: 16px; line-height: 1.2; overflow-wrap: anywhere; }
-.tot-eyebrow { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.8; }
-.tot-desc { font-size: 11.5px; opacity: 0.85; margin-top: 2px; overflow-wrap: anywhere; }
-.tot-hero { flex: none; height: 120px; margin-top: 8px; background: #0e1118; overflow: hidden; }
-.tot-hero.empty { display: none; }
-.tot-hero-img { width: 100%; height: 100%; object-fit: cover; object-position: center 25%; display: block; }
-.tot-card-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; padding: 8px 12px 6px; }
-.tot-card-scroll.grow { flex: 1 1 auto; }
-.tot .tot-summary {
-  flex: none; margin: 8px 12px 0; font-size: 12px; color: #d8d4c6; user-select: text;
-  display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
-}
-.tot-stat { background: var(--panel-2); border-radius: 5px; padding: 4px 8px; }
-.tot-stat b { display: block; font: 700 14px var(--mono); }
-.tot-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 8px; }
-.tot-quote { font: italic 500 15px/1.4 Georgia, 'Times New Roman', serif; color: #f4efdf; margin: 4px 0 2px; user-select: text; }
-.tot-quote.warn { color: var(--amber); }
-.tot-quote.bad { color: var(--red); }
-.tot-quote.good { color: var(--green); }
-.tot-patience-k { margin-top: 10px; }
-.tot-bar-big { height: 8px; border-radius: 4px; }
-
-/* the one search box; matching links show only while it has focus or text */
-.tot-search { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; margin: 8px 12px 0; }
+.tot-ll-title { flex: none; padding: 0 10px 6px; font-size: 14px; line-height: 1.2; overflow-wrap: anywhere; }
 .tot-filter {
-  width: 100%; background: rgba(0, 0, 0, 0.3); border: 1px solid var(--edge);
-  border-radius: 5px; padding: 6px 8px; user-select: text;
+  flex: none; margin: 0 8px 6px; width: calc(100% - 16px); background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--edge); border-radius: 5px; padding: 5px 8px; user-select: text;
 }
 .tot-filter::placeholder { color: var(--faint); }
-.tot-search.open .tot-filter { border-color: var(--blue); border-radius: 5px 5px 0 0; }
-.tot-links {
-  flex: 1 1 auto; min-height: 0; max-height: 210px; overflow-y: auto;
-  border: 1px solid var(--blue); border-top: 0; border-radius: 0 0 5px 5px; background: rgba(0, 0, 0, 0.25);
-}
+.tot-ll-count { flex: none; padding: 2px 10px 6px; font-size: 12px; color: var(--dim); }
+.tot-links { flex: 1 1 auto; min-height: 0; overflow-y: auto; border-top: 1px solid var(--edge); }
 .tot-linkrow { display: flex; }
 .tot .tot-linkbtn {
   flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left;
-  padding: 6px 10px; border: 0; background: none; font: inherit;
+  padding: 4px 10px; border: 0; background: none; font: inherit; font-size: 12px;
 }
 .tot .tot-linkbtn:hover { background: rgba(255, 255, 255, 0.1); }
 .tot .tot-linkbtn.busy { opacity: 0.5; cursor: progress; }
 .tot-linkname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tot-linktag { flex: none; font-size: 10px; color: var(--green); }
+.tot-linktag:empty { display: none; }
 
-/* ---------------------------------------------------------------- build card */
-.tot-buildcard { flex: none; padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 3px; border-left: 3px solid var(--amber); }
-.tot-buildcard h2 { font-size: 16px; line-height: 1.2; overflow-wrap: anywhere; }
-.tot-buildcard .tot-desc { margin: 0 0 2px; color: var(--dim); opacity: 1; }
-.tot-price { font: 700 22px/1.2 var(--mono); color: var(--amber); margin-top: 2px; }
-.tot-quiet { font-size: 12px; color: var(--dim); }
-.tot-quiet.bad { color: var(--red); }
-.tot-bonus { margin-top: 2px; font-size: 12.5px; font-weight: 700; color: var(--green); }
-.tot .tot-buildbtn { width: 100%; margin-top: 6px; padding: 10px 14px; font-size: 15px; letter-spacing: 0.02em; }
-.tot-buildcard .tot-note { min-height: 0; }
-.tot-buildcard .tot-note:empty { display: none; }
+/* ---------------------------------------------------------------- article reader */
+.tot-reader {
+  position: absolute; inset: 0; z-index: 10; pointer-events: auto; overflow-y: auto;
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: rgba(6, 8, 14, 0.66);
+}
+.tot-reader-panel { width: min(560px, 100%); max-height: 100%; overflow-y: auto; display: flex; flex-direction: column; user-select: text; }
+.tot-reader-photo { flex: none; background: #0e1118; text-align: center; }
+.tot-reader-photo.empty { display: none; }
+.tot-reader-img { max-width: 100%; max-height: 44vh; object-fit: contain; display: block; margin: 0 auto; }
+.tot-reader-body { padding: 14px 18px 18px; }
+.tot-reader-body h2 { font-size: 22px; line-height: 1.2; }
+.tot-reader-desc { margin-top: 3px; color: var(--dim); font-size: 13px; }
+.tot-reader-text { margin-top: 12px; font: 15px/1.55 Georgia, 'Times New Roman', serif; color: #f4efdf; }
+.tot-reader-link { display: inline-block; margin-top: 14px; color: var(--blue); font-weight: 600; }
 
 /* ---------------------------------------------------------------- notes stack (top centre of the stage) */
 .tot-notes {
@@ -275,7 +231,7 @@
 .tot-over-stat { background: var(--panel-2); border-radius: 6px; padding: 10px 6px; display: flex; flex-direction: column; gap: 2px; }
 .tot-over-stat b { font: 700 20px var(--mono); }
 
-/* ---------------------------------------------------------------- narrow and tall (about 900px and below) */
+/* ---------------------------------------------------------------- narrow (about 900px and below) */
 @media (max-width: 900px) {
   .tot-hud { top: 6px; left: 8px; }
   .tot .tot-speed { top: 8px; right: 8px; }
@@ -286,22 +242,11 @@
     100% { background: var(--panel); transform: none; }
   }
   .tot-stage { left: 8px; right: 8px; top: 138px; bottom: 8px; }
-  /* the queue is a small chip until tapped; open, it overlays the top of the map */
-  .tot-queue.open { width: min(330px, 100%); max-height: 46%; }
-  /* cards become a bottom sheet that leaves the middle of the map clear */
-  .tot-side { top: auto; left: 0; right: 0; width: auto; max-height: 40%; }
-  .tot-card { overflow-y: auto; }
-  /* the sheet scrolls as a whole: its parts must keep their height, or they overlap each other */
-  .tot-card > * { flex-shrink: 0; }
-  .tot-card-scroll { flex: none; overflow: visible; }
-  .tot-links { max-height: 150px; }
-  .tot-hero { height: 84px; }
-  .tot.has-build .tot-card { display: none; }
-  .tot-notes { top: 40px; width: calc(100% - 16px); }
-}
-@media (max-width: 1240px) and (min-width: 901px) {
-  .tot-queue.open { width: 280px; }
-  .tot-side { width: 320px; }
+  .tot-tickets { left: 8px; top: 126px; width: min(250px, 62%); }
+  /* the link list becomes a bottom sheet, never taller than 35% */
+  .tot-linklist { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; max-height: 35%; }
+  .tot-notes { top: auto; bottom: 8px; width: calc(100% - 16px); }
+  .tot-reader-img { max-height: 30vh; }
 }
 @media (prefers-reduced-motion: reduce) {
   .tot-toast, .tot-spinner, .tot-last.flash .tot-last-amt, .tot-gold-v.flash, .tot-goal.celebrate { animation: none; }

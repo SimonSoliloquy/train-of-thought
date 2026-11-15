@@ -6,6 +6,7 @@ import { hexToWorld, hashString } from '../hex.js';
 import { DynamicInstances } from './dynamic.js';
 import { BUBBLE_COLORS } from './palette.js';
 import { easeOutBack } from './terrain.js';
+import { gold, ticketBadge } from './format.js';
 
 const ROOFS = ['#c4553b', '#3f6f8f', '#5d7d4a', '#8c5a9a', '#b8862f', '#4a5568', '#a8483e'];
 const WALLS = ['#efe4cc', '#e9dcc0', '#b5643d', '#d8c7a5', '#f2ead8'];
@@ -259,7 +260,6 @@ export const SIGN_RING = 3.1;
 export const MAX_SIGNPOSTS = 10;
 export const SIGN_REQUERY = 1; // seconds between signpost price refreshes
 
-function money(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
 
 /**
  * What each signpost round station `from` says: the price to build to that link
@@ -521,10 +521,11 @@ export class StationsView {
         g.y = this._ground(L.x, L.z, s.y);
         const hov = this.hover === L.title;
         const info = this.signInfo.get(L.title) || null;
-        const want = !!(info && info.waiting > 0);
+        const tk = ticketBadge(L.title, state && state.tickets);
+        const want = !!(info && info.waiting > 0) || !!tk;
         g.want = want;
         const p = Math.min(1, Math.max(0, (this.time - g.born) / 0.35));
-        const k2 = Math.max(0.001, easeOutBack(p)) * (hov ? 1.15 : want ? 1.08 : 1);
+        const k2 = Math.max(0.001, easeOutBack(p)) * (hov ? 1.15 : tk && tk.kind === 'to' ? 1.2 : want ? 1.08 : 1);
         // wanted signposts hop gently and shine
         const bob = want ? Math.abs(Math.sin(this.time * 3.2 + k * 0.7)) * 0.07 : 0;
         g.mesh.position.set(g.x, g.y + bob, g.z);
@@ -534,11 +535,11 @@ export class StationsView {
         if (this.labels) {
           const key = `sign:${L.title}`;
           this.labels.upsert(key, {
-            text: L.title, kind: 'sign', x: g.x, y: g.y + 0.9, z: g.z, priority: want ? 1.2e5 : 1e5, pinned: true, movable: true,
-            sub: info && info.price != null ? `Build ${money(info.price)}` : '',
+            text: L.title, kind: 'sign', x: g.x, y: g.y + 0.9, z: g.z, priority: tk ? (tk.kind === 'to' ? 2.2e5 : 1.6e5) : want ? 1.2e5 : 1e5, pinned: true, movable: true,
+            sub: info && info.price != null ? gold(info.price) : '',
             subDim: !!(info && info.price != null && !info.afford),
-            badge: want ? `${info.waiting} waiting \u00b7 +${money(info.fares)}` : '',
-            want,
+            badge: tk ? tk.text : (info && info.waiting > 0) ? `${info.waiting} waiting \u00b7 +${gold(info.fares)}` : '',
+            want, tone: tk ? `tkt-${tk.kind}` : '',
             onClick: () => { if (this.onSignClick) this.onSignClick(L.title); },
             onHover: (on) => { this.hover = on ? L.title : (this.hover === L.title ? null : this.hover); },
           });

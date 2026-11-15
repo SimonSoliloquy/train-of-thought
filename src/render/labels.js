@@ -3,6 +3,7 @@
 // overlap are hidden, and movable ones (upgrade tags) step aside instead, so the map never
 // turns into a word cloud and a tag never sits on top of a signpost.
 import * as THREE from 'three';
+import { gold } from './format.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
 const STYLE_ID = 'tot-render-labels-style';
@@ -50,6 +51,15 @@ const CSS = `
 .tot-label.sign.want .tot-dot { border-left-color: #1d8ea3; }
 @keyframes tot-glow { 0%, 100% { box-shadow: 0 0 0 2px #1d8ea3, 0 3px 10px rgba(0,0,0,.28), 0 0 8px rgba(80,220,255,.45); }
   50% { box-shadow: 0 0 0 2.5px #4fd2ea, 0 3px 12px rgba(0,0,0,.3), 0 0 22px 4px rgba(80,220,255,.85); } }
+.tot-label.sign.tkt-to, .tot-label.sign.tkt-from { z-index: 110000 !important; }
+.tot-label.sign.tkt-to .tot-badge, .tot-label.sign.tkt-from .tot-badge { display: block; animation: tot-bob 1.2s ease-in-out infinite; }
+.tot-label.sign.tkt-to .tot-badge { font-size: 13.5px; color: #3a2300; background: linear-gradient(#fff2a8, #ffc233); box-shadow: 0 0 0 1.5px #b87a00, 0 0 14px rgba(255,200,60,.95); }
+.tot-label.sign.tkt-to .tot-pill { font-size: 14.5px; background: linear-gradient(#fff6d0, #ffd966); animation: tot-gold 1.3s ease-in-out infinite; }
+.tot-label.sign.tkt-to .tot-dot { border-left-color: #d98e00; }
+.tot-label.sign.tkt-from .tot-badge { color: #3a2300; background: linear-gradient(#ffe9b8, #f3b04a); box-shadow: 0 0 0 1px #b87a00; }
+.tot-label.sign.tkt-from .tot-dot { border-left-color: #d98e00; }
+@keyframes tot-gold { 0%, 100% { box-shadow: 0 0 0 2.5px #d98e00, 0 3px 12px rgba(0,0,0,.3), 0 0 10px rgba(255,190,40,.55); }
+  50% { box-shadow: 0 0 0 3px #ffc233, 0 3px 14px rgba(0,0,0,.3), 0 0 26px 6px rgba(255,200,60,.95); } }
 .tot-label.ghost.target { font-size: 12.5px; font-weight: 600; }
 .tot-label.ghost.target .tot-pill { background: rgba(40, 52, 70, .82); box-shadow: 0 0 0 2px #ffd966, 0 3px 12px rgba(0,0,0,.3); }
 .tot-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
@@ -136,7 +146,6 @@ export function cullOverlaps(items, pad = 4) {
   return new Set(placeLabels(items.map((it) => ({ ...it, movable: false })), pad).keys());
 }
 
-function money(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
 
 export class LabelLayer {
   constructor(container) {
@@ -176,7 +185,7 @@ export class LabelLayer {
    * sub: a second line (signposts: the price); subDim: shown dim and reddish (cannot afford);
    * badge: a highlighted third line (signposts: passengers waiting to go there); want: stand out.
    */
-  upsert(key, { text, kind, x, y, z, priority = 0, count = 0, pinned = false, movable = false, onClick = null, onHover = null, sub = '', subDim = false, badge = '', want = false }) {
+  upsert(key, { text, kind, x, y, z, priority = 0, count = 0, pinned = false, movable = false, onClick = null, onHover = null, sub = '', subDim = false, badge = '', want = false, tone = '' }) {
     let it = this.items.get(key);
     if (!it) {
       it = this._shell(key, `tot-label ${kind}`);
@@ -211,7 +220,7 @@ export class LabelLayer {
     it.onClick = onClick;
     it.onHover = onHover;
     it.el.style.pointerEvents = onClick && it.alpha >= 0.05 ? 'auto' : '';
-    if (it.kind !== kind || it.want !== !!want) { it.kind = kind; it.want = !!want; it.flags = '\u0000'; it.w = 0; }
+    if (it.kind !== kind || it.want !== !!want || it.tone !== tone) { it.kind = kind; it.want = !!want; it.tone = tone; it.flags = '\u0000'; it.w = 0; }
     if (it.text !== text) { it.text = text; it.tx.textContent = text; it.w = 0; }
     if (it.count !== count) {
       it.count = count;
@@ -235,7 +244,7 @@ export class LabelLayer {
 
   _applyClass(it, hover, selected) {
     it.flags = `${hover ? 'h' : ''}${selected ? 's' : ''}`;
-    it.el.className = `tot-label ${it.kind}${it.want ? ' want' : ''}${hover ? ' hover' : ''}${selected ? ' selected' : ''}`;
+    it.el.className = `tot-label ${it.kind}${it.want ? ' want' : ''}${it.tone ? ` ${it.tone}` : ''}${hover ? ' hover' : ''}${selected ? ' selected' : ''}`;
   }
 
   /**
@@ -271,7 +280,7 @@ export class LabelLayer {
         chip.className = 'tot-tag ' + (o.affordable ? 'afford' : 'dim');
         chip.dataset.type = o.typeId;
         const top = this.doc.createElement('span');
-        top.textContent = o.title || `${o.name} ${money(o.cost)}`;
+        top.textContent = o.title || `${o.name} ${gold(o.cost)}`;
         const small = this.doc.createElement('small');
         small.textContent = o.sub != null ? o.sub : (o.blurb || '');
         chip.append(top, small);

@@ -9,22 +9,21 @@ export function fmtInt(n) {
   return sgn + String(Math.abs(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-/** Whole dollars with thousands separators: $1,234 or -$56. */
+/** Whole gold with thousands separators: "1,234 gold" or "-56 gold". */
 export function fmtMoney(n) {
-  const v = Math.round(Number.isFinite(n) ? n : 0);
-  return (v < 0 ? '-$' : '$') + fmtInt(Math.abs(v));
+  return fmtInt(n) + ' gold';
 }
 
-/** Signed whole dollars: +$87, -$12, $0. */
+/** Signed whole gold: "+87 gold", "-12 gold", "0 gold". */
 export function fmtSigned(n) {
   const v = Math.round(Number.isFinite(n) ? n : 0);
   return (v > 0 ? '+' : '') + fmtMoney(v);
 }
 
-/** A cost shown as money leaving: \u2212$11, or $0. */
+/** A cost shown as gold leaving: "\u221211 gold", or "0 gold". */
 export function fmtCost(n) {
   const v = Math.round(Number.isFinite(n) ? n : 0);
-  return v > 0 ? '\u2212$' + fmtInt(v) : '$0';
+  return v > 0 ? '\u2212' + fmtInt(v) + ' gold' : '0 gold';
 }
 
 /** "3m 12s" or "45s": time survived, for the game-over screen. */
@@ -88,7 +87,7 @@ export function speedLabel(speed) {
 
 // ---------------------------------------------------------------- the goal line
 
-/** The goal line's words: { text, progress ("3/5" only when target > 1), reward ("+$100"), how }. */
+/** The goal line's words: { text, progress ("3/5" only when target > 1), reward ("+100 gold"), how }. */
 export function goalView(goal) {
   if (!goal) return null;
   const target = Math.round(goal.target) || 0;
@@ -118,56 +117,14 @@ export function safeThumb(url) {
   return null;
 }
 
-// ---------------------------------------------------------------- map status
-
-const linkedCache = new WeakMap();
-/** Every title that any built station links to (cached until a station is added). */
-function linkedTitles(state) {
-  const c = linkedCache.get(state);
-  if (c && c.size === state.stations.size) return c.set;
-  const set = new Set();
-  for (const st of state.stations.values()) for (const t of (st.article && st.article.links) || []) set.add(t);
-  linkedCache.set(state, { size: state.stations.size, set });
-  return set;
-}
-
-/** 'built' | 'ghost' (one link from a built station) | 'absent' for any article title. */
-export function mapStatus(title, state) {
-  if (state.stations.has(title)) return 'built';
-  if ((state.stubs && state.stubs.has(title)) || linkedTitles(state).has(title)) return 'ghost';
-  return 'absent';
-}
-
-export function kindInfo(kind) {
-  if (kind === 'list') return { label: 'List', premium: true };
-  if (kind === 'disambiguation') return { label: 'Page of pointers', premium: true };
-  return { label: 'Article', premium: false };
-}
-
-/** Why a page costs more, in plain words. '' for an ordinary article. */
-export function premiumNote(kind, mult = 5) {
-  const k = kindInfo(kind);
-  if (!k.premium) return '';
-  const x = `${mult}\u00d7`;
-  return kind === 'list'
-    ? `This page costs ${x} because it is a list`
-    : `This page costs ${x} because it only points to other pages`;
-}
-
-// ---------------------------------------------------------------- thoughts
-
-export function patienceFraction(t) {
-  if (!(t.patienceMax > 0)) return 0;
-  return Math.max(0, Math.min(1, t.patience / t.patienceMax));
-}
-
-export function patienceTone(frac) {
-  return frac > 0.5 ? 'ok' : frac > 0.25 ? 'warn' : 'bad';
-}
-
-/** Most urgent first: least patience left, then oldest id. Returns a new array. */
-export function sortThoughts(thoughts) {
-  return thoughts.slice().sort((a, b) => (a.patience - b.patience) || (a.id - b.id));
+/** Only https links to Wikipedia itself are offered as "Read on Wikipedia". */
+export function safeArticleUrl(url) {
+  if (typeof url !== 'string') return null;
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'https:' && (u.hostname === 'wikipedia.org' || u.hostname.endsWith('.wikipedia.org'))) return u.href;
+  } catch { /* fall through */ }
+  return null;
 }
 
 // ---------------------------------------------------------------- station links
@@ -255,10 +212,10 @@ export function needsRequote(lastInflation, inflation, tol = 0.02) {
   return Math.abs(inflation - lastInflation) / lastInflation >= tol;
 }
 
-/** The quiet line under a build price: "track $204 · station $131 · 2 bridges". */
+/** The quiet line under a build price: "track 204 \u00b7 station 131 \u00b7 2 bridges". */
 export function quoteLine(s) {
-  const parts = [`track ${fmtMoney(s.trackCost)}`];
-  if (s.stationCost > 0) parts.push(`station ${fmtMoney(s.stationCost)}`);
+  const parts = [`track ${fmtInt(s.trackCost)}`];
+  if (s.stationCost > 0) parts.push(`station ${fmtInt(s.stationCost)}`);
   const terrain = terrainText(s);
   if (terrain !== 'all ground') parts.push(terrain);
   return parts.join(' \u00b7 ');
@@ -281,151 +238,58 @@ export function chooseSource(sources, preferred, recent, totalOf) {
   return best || sources[0];
 }
 
-// ---------------------------------------------------------------- passengers and reputation
-
-/** 0 calm, 1 restless, 2 frantic; the same thresholds the 3D passengers use. */
-export function passengerMood(frac) {
-  return frac > 0.5 ? 0 : frac > 0.22 ? 1 : 2;
-}
-
-/** Whether the track network (level 1+, so a train runs) can carry a passenger between two stations. */
-export function networkReachable(tracks, from, to) {
-  if (from === to) return true;
-  const next = new Map();
-  for (const t of tracks || []) {
-    if (!(t.level >= 1)) continue;
-    if (!next.has(t.from)) next.set(t.from, new Set());
-    if (!next.has(t.to)) next.set(t.to, new Set());
-    next.get(t.from).add(t.to);
-    next.get(t.to).add(t.from);
-  }
-  const seen = new Set([from]);
-  const queue = [from];
-  while (queue.length) {
-    for (const n of next.get(queue.shift()) || []) {
-      if (n === to) return true;
-      if (!seen.has(n)) { seen.add(n); queue.push(n); }
-    }
-  }
-  return false;
+/** What is missing when the player cannot yet afford a price: "120 more gold needed". */
+export function needMoreText(total, money) {
+  return `${fmtInt(Math.max(0, Math.ceil(total - money)))} more gold needed`;
 }
 
 /**
- * What a passenger is thinking, in its own words. It names the real obstacle, so reading a
- * few passengers tells the player what the network is missing.
- * where: 'unknown' (no station links to the destination), 'ghost' (a station links to it, not built),
- *        'unlinked' (built, no running track gets there), 'served' (a running track gets there).
+ * The offer floated over the place being built towards (renderer.setBuildOffer).
+ * ticket: the ticket whose destination this is, if any.
  */
-export function thoughtLine({ to, state, mood, where, variant = 0 }) {
-  const v = Math.abs(variant) % 2;
-  if (state === 'riding') {
-    return [
-      [`On my way to ${to} at last.`, `${to}, here I come.`],
-      [`Finally moving. ${to} had better be worth it.`, `Took a while, but we're rolling towards ${to}.`],
-      [`About time! I nearly gave up on ${to}.`, `I'll get to ${to}, but I won't forget the wait.`],
-    ][mood][v];
-  }
-  if (where === 'unknown') {
-    return [
-      [`I'd like to get to ${to}. It must be a link or two from here.`, `Does anything around here lead to ${to}?`],
-      [`Nobody seems to know the way to ${to}.`, `Which of these links goes towards ${to}? Anyone?`],
-      [`There isn't even a sign for ${to}! I'm giving up soon.`, `Nothing here even links to ${to}. This is hopeless.`],
-    ][mood][v];
-  }
-  if (where === 'ghost') {
-    return [
-      [`One of our stations links to ${to}. Is the track coming?`, `${to} is one link away. It just needs a station.`],
-      [`${to} is one link from here and nobody has built the track.`, `How long does it take to lay track to ${to}?`],
-      [`Build the track to ${to} already! I can't wait much longer.`, `${to} is one link away and I'm still stuck here!`],
-    ][mood][v];
-  }
-  if (where === 'unlinked') {
-    return [
-      [`There's a station at ${to}, but no train runs there from here.`, `${to} exists. I just can't get a train to it.`],
-      [`Why does no train from here reach ${to}?`, `A station at ${to} and no service to it. Typical.`],
-      [`Put a train on the track to ${to}! The station is sitting right there!`, `No train to ${to} at all? I'm about to walk.`],
-    ][mood][v];
-  }
-  return [
-    [`Waiting for my train to ${to}.`, `The train to ${to} should be along soon.`],
-    [`Where is that train to ${to}?`, `This track to ${to} could use a faster train.`],
-    [`I've been waiting ages for a train to ${to}!`, `One more minute and I'm forgetting ${to} entirely.`],
-  ][mood][v];
-}
-
-/** Where a thought's destination stands for its passenger; see thoughtLine. */
-export function destinationStatus(thought, state) {
-  const status = mapStatus(thought.to, state);
-  if (status === 'absent') return 'unknown';
-  if (status !== 'built') return 'ghost';
-  const here = thought.at || thought.from;
-  return networkReachable(state.tracks, here, thought.to) ? 'served' : 'unlinked';
-}
-
-/** Reputation as the player sees it: a percentage, a word, and what it does to fares and crowds. */
-export function reputationInfo(rep, econ) {
-  const r = Math.max(0, Math.min(1, Number.isFinite(rep) ? rep : 0.5));
-  const lerp = (a, b) => a + (b - a) * r;
+export function buildOffer({ title, quote, money, inflight, ticket }) {
+  const short = !inflight && quote.total > money;
+  let sub;
+  if (short) sub = needMoreText(quote.total, money);
+  else if (ticket) sub = `Ticket \u00b7 ${fmtSigned(ticket.reward)}`;
+  else sub = quoteLine(summarizeQuote(quote));
   return {
-    percent: Math.round(r * 100),
-    word: r >= 0.8 ? 'Beloved' : r >= 0.6 ? 'Well liked' : r >= 0.4 ? 'Fair' : r >= 0.2 ? 'Poor' : 'Dreadful',
-    tone: r >= 0.6 ? 'ok' : r >= 0.35 ? 'warn' : 'bad',
-    fare: lerp(econ.reputationFareMin, econ.reputationFareMax),
-    crowd: lerp(econ.reputationCrowdMin, econ.reputationCrowdMax),
+    title,
+    label: inflight ? 'Building\u2026' : `Build \u00b7 ${fmtMoney(quote.total)}`,
+    sub,
+    affordable: !inflight && !short,
   };
 }
 
-/** Passengers waiting at the platforms (riding ones are already on the way). */
-export function waitingCount(thoughts) {
-  let n = 0;
-  for (const t of thoughts || []) if (t.state === 'waiting') n++;
-  return n;
+// ---------------------------------------------------------------- tickets
+
+/** "about 3 links away". */
+export function ticketDistance(links) {
+  const n = Math.max(1, Math.round(Number.isFinite(links) ? links : 1));
+  return `about ${n} ${n === 1 ? 'link' : 'links'} away`;
 }
 
-/** "12 passengers waiting". */
-export function passengersLabel(n) {
-  if (!(n > 0)) return 'No passengers waiting';
-  return n === 1 ? '1 passenger waiting' : `${fmtInt(n)} passengers waiting`;
+/** Fraction of a ticket's time left (0..1), and its bar colour. */
+export function ticketTimeFraction(t) {
+  if (!(t.timeMax > 0)) return 0;
+  return Math.max(0, Math.min(1, t.time / t.timeMax));
 }
 
-/**
- * The bonus the game pays the moment a station is built at `title`: `fraction` of the sum of the
- * current fares of the passengers waiting to go there. { count, amount }.
- */
-export function waitingBonus(thoughts, title, fraction) {
-  let count = 0;
-  let sum = 0;
-  for (const t of thoughts || []) {
-    if (t.state !== 'waiting' || t.to !== title) continue;
-    count++;
-    sum += t.fare || 0;
-  }
-  return { count, amount: Math.round(sum * (fraction || 0)) };
+export function ticketTone(frac) {
+  return frac > 0.5 ? 'ok' : frac > 0.25 ? 'warn' : 'bad';
 }
 
-/** "3 passengers waiting \u00b7 pays +$105 now", or '' when nobody is waiting. */
-export function bonusLine(b) {
-  if (!b || b.count <= 0) return '';
-  return `${b.count === 1 ? '1 passenger' : `${fmtInt(b.count)} passengers`} waiting \u00b7 pays ${fmtSigned(b.amount)} now`;
-}
-
-/** What is missing when the player cannot yet afford a price: "$120 more gold needed". */
-export function needMoreText(total, money) {
-  return `${fmtMoney(Math.max(0, Math.ceil(total - money)))} more gold needed`;
-}
-
-// A passenger's one status, in words a new player understands.
-export const QUEUE_STATUS = {
-  riding: 'On the way',
-  coming: 'Train coming',
-  train: 'Needs a train',
-  link: 'Build it: one link away',
-  far: 'Not linked yet',
-};
-
-/** 'riding' | 'coming' | 'train' | 'link' | 'far' for a passenger (see QUEUE_STATUS). */
-export function queueStatus(thought, state) {
-  if (thought.state === 'riding') return 'riding';
-  const d = destinationStatus(thought, state);
-  return d === 'served' ? 'coming' : d === 'unlinked' ? 'train' : d === 'ghost' ? 'link' : 'far';
+/** The words of one ticket row. isBuilt(title) says whether the player has that station. */
+export function ticketView(t, isBuilt) {
+  const fromBuilt = !!isBuilt(t.from);
+  const far = ticketDistance(t.links);
+  const frac = ticketTimeFraction(t);
+  return {
+    route: `${t.from} \u2192 ${t.to}`,
+    how: fromBuilt ? far : `${far} \u00b7 build both ends`,
+    reward: fmtSigned(t.reward),
+    fromBuilt,
+    fraction: frac,
+    tone: ticketTone(frac),
+  };
 }

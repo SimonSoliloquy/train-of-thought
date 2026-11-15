@@ -30,7 +30,7 @@ export function createLimiter({ gaps = {}, defaultGap = 80, globalGap = 30, now 
 }
 
 const GAPS = {
-  coin: 400, thud: 400, chime: 70, flourish: 250, thunk: 200, whistle: 250, fall: 350, tick: 400,
+  coin: 400, thud: 400, ping: 300, chime: 70, flourish: 250, thunk: 200, whistle: 250, fall: 350, tick: 400,
 };
 
 function readMuted() {
@@ -162,6 +162,10 @@ export function createSound({ game }) {
       [0, 4, 7, 12].forEach((s, i) => tone({ type: 'triangle', freq: root * Math.pow(2, s / 12), at: i * 0.085, dur: i === 3 ? 0.55 : 0.2, vol: 0.13 }));
       tone({ type: 'sine', freq: root * 2 * Math.pow(2, 7 / 12), at: 0.26, dur: 0.5, vol: 0.05 });
     },
+    ping() {
+      tone({ type: 'sine', freq: 880, dur: 0.22, vol: 0.06 });
+      tone({ type: 'sine', freq: 1320, at: 0.06, dur: 0.3, vol: 0.04 });
+    },
     thunk() {
       tone({ type: 'sine', freq: 170, freq2: 55, dur: 0.18, vol: 0.32 });
       thump({ dur: 0.1, vol: 0.2, cutoff: 700 });
@@ -194,6 +198,9 @@ export function createSound({ game }) {
   on('stationBuilt', () => play('thunk'));
   on('trackUpgraded', () => play('whistle'));
   on('thoughtLost', () => play('fall'));
+  on('ticketDone', () => play('flourish', 'goal'));
+  on('ticketAdded', () => play('ping'));
+  on('ticketExpired', () => play('fall'));
 
   let lastTick = null;
   return {

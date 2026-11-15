@@ -557,10 +557,10 @@ test('signposts say the price and who is waiting to go there', async () => {
 test('track tags read as instructions; the first-train goal picks one bare track', async () => {
   const { tagChoices, FIRST_TRAIN_GOAL } = await import('./upgrades.js');
   const opt = (typeId) => ({ typeId, name: TRAIN_TYPES[typeId].name, blurb: TRAIN_TYPES[typeId].blurb, cost: TRAIN_TYPES[typeId].cost, affordable: true });
-  assert.equal(tagChoices(0, [opt('local')])[0].title, 'Add train · $120');
+  assert.equal(tagChoices(0, [opt('local')])[0].title, 'Add train · 120 gold');
   assert.match(tagChoices(0, [opt('local')])[0].sub, /Local/);
-  assert.equal(tagChoices(1, [opt('express')])[0].title, 'Upgrade · Express $320');
-  assert.deepEqual(tagChoices(2, [opt('freight'), opt('bullet')]).map((o) => o.title), ['Freight $520', 'Bullet $520']);
+  assert.equal(tagChoices(1, [opt('express')])[0].title, 'Upgrade · Express 320 gold');
+  assert.deepEqual(tagChoices(2, [opt('freight'), opt('bullet')]).map((o) => o.title), ['Freight 520 gold', 'Bullet 520 gold']);
   const { world, game } = mockRoutes();
   const tags = new UpgradeTags({ game, labels: null, groundAt: () => 0 });
   game.state.goal = { id: FIRST_TRAIN_GOAL, text: '', how: '', progress: 0, target: 1, reward: 1 };
@@ -695,4 +695,87 @@ test('tall bridges: trestles and stone viaduct piers build finite geometry', () 
   assert.ok(out.builder.vertexCount > 1000 && finiteArr(out.builder.pos) && finiteArr(out.builder.nor));
   assert.equal(out.portals.length, 0);
   assert.deepEqual(out.buried, []);
+});
+
+test('gold: every amount reads as gold, never dollars', async () => {
+  const { gold } = await import('./format.js');
+  assert.equal(gold(326), '326 gold');
+  assert.equal(gold(1234.6), '1,235 gold');
+  assert.equal(`+${gold(140)}`, '+140 gold');
+  assert.ok(!gold(5).includes('$'));
+  assert.equal(`Add train · ${gold(120)}`, 'Add train · 120 gold');
+});
+
+test('tickets: a destination reads "Ticket · +N gold", an unbuilt start "Ticket start"', async () => {
+  const { ticketBadge } = await import('./format.js');
+  const tickets = [
+    { id: 1, from: 'A', to: 'B', reward: 650 },
+    { id: 2, from: 'C', to: 'B', reward: 700 },
+    { id: 3, from: 'B', to: 'D', reward: 100 },
+  ];
+  assert.deepEqual(ticketBadge('B', tickets), { kind: 'to', reward: 700, text: 'Ticket · +700 gold' });
+  assert.equal(ticketBadge('C', tickets).text, 'Ticket start');
+  assert.equal(ticketBadge('D', tickets).kind, 'to');
+  assert.equal(ticketBadge('Z', tickets), null);
+  assert.equal(ticketBadge('B', undefined), null);
+});
+
+test('mock game: tickets exist, complete with ticketDone, and stations have mixed thumbnails', async () => {
+  const world = createMockWorld();
+  const game = createMockGame({ world });
+  const seen = { added: [], done: [] };
+  game.on('ticketAdded', (p) => seen.added.push(p));
+  game.on('ticketDone', (p) => seen.done.push(p));
+  await game.start();
+  assert.ok(game.state.tickets.length > 0 && game.state.tickets.length <= 3);
+  assert.equal(seen.added.length, game.state.tickets.length);
+  game.state.money = 1e6;
+  const t = game.state.tickets.find((x) => game.state.stations.has(x.from));
+  const res = await game.build(t.from, t.to);
+  assert.ok(res.ok, res.reason);
+  assert.equal(seen.done.length, 1);
+  assert.equal(seen.done[0].ticket.to, t.to);
+  assert.ok(!game.state.tickets.includes(t));
+  const thumbs = [...game.state.stations.values()].map((s) => s.article.thumbnail);
+  assert.ok(thumbs.some((x) => x) );
+});
+
+test('article cards: pose floats above the station and turns; crop covers; initial letter', async () => {
+  const { cardPose, coverCrop, cardInitial, ArticleCards, CARD_LIFT, CARD_PICK_R } = await import('./cards.js');
+  const st = { x: 2, y: 1, z: -3 };
+  const a = cardPose(st, 0, 0), b = cardPose(st, 2, 0);
+  assert.ok(a.y > st.y + CARD_LIFT - 0.1 && a.y < st.y + CARD_LIFT + 0.1);
+  assert.equal(a.x, 2); assert.equal(a.z, -3);
+  assert.ok(b.yaw > a.yaw);
+  const wide = coverCrop(400, 100), tall = coverCrop(100, 400);
+  assert.ok(wide.rx < 1 && wide.ry === 1 && Math.abs(wide.ox - (1 - wide.rx) / 2) < 1e-9);
+  assert.ok(tall.ry < 1 && tall.rx === 1);
+  assert.deepEqual(coverCrop(0, 0), { rx: 1, ry: 1, ox: 0, oy: 0 });
+  assert.equal(cardInitial('  steam engine'), 'S');
+  assert.equal(cardInitial(''), '?');
+
+  // a card per built station; falls back to a letter when there is no picture; picks as 'article'
+  const loads = [];
+  const cards = new ArticleCards({
+    parent: new THREE.Group(),
+    loadTexture: (url, ok, fail) => loads.push({ url, ok, fail }),
+    letterTexture: () => new THREE.Texture(),
+  });
+  const built = new Map([['A', { x: 0, y: 0, z: 0, born: null }], ['B', { x: 5, y: 0, z: 0, born: null }]]);
+  const state = { stations: new Map([['A', { article: { thumbnail: 'https://upload.wikimedia.org/a.jpg' } }], ['B', { article: { thumbnail: null } }]]) };
+  cards.update(0.016, built, state);
+  assert.equal(cards.cards.size, 2);
+  assert.deepEqual(loads.map((l) => l.url), ['https://upload.wikimedia.org/a.jpg']);
+  assert.ok(cards.cards.get('A').tex && cards.cards.get('B').tex, 'both show something at once');
+  loads[0].fail();
+  assert.ok(cards.cards.get('A').tex, 'a failed picture keeps the letter card');
+  const picks = cards.pickables();
+  assert.equal(picks.length, 2);
+  assert.equal(picks[0].kind, 'article');
+  assert.equal(picks[0].title, 'A');
+  assert.ok(picks[0].r >= CARD_PICK_R && picks[0].y > 1);
+  built.delete('B');
+  cards.update(0.016, built, state);
+  assert.equal(cards.cards.size, 1);
+  cards.dispose();
 });

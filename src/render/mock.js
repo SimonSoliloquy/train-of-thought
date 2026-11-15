@@ -303,7 +303,7 @@ export function createMockGame({ world, buildInterval = 1.1, money = 400 }) {
     phase: 'idle', time: 0, speed: 1, money, score: 0, inflation: 1,
     payday: { period: ECON.paydaySeconds, in: ECON.paydaySeconds, income: 0, fares: 0, upkeep: 0, pending: 0, forecast: 0, last: null },
     delivered: 0, lost: 0, reputation: 0.5, uniqueLinks: 0, bankruptIn: null,
-    goal: null, streak: 0,
+    goal: null, streak: 0, tickets: [],
     stations: new Map(), stubs: new Map(), tracks: [], trains: [], thoughts: [],
   };
   // goals: the tutorial's "put a train on a track", then deliveries that grow
@@ -336,12 +336,45 @@ export function createMockGame({ world, buildInterval = 1.1, money = 400 }) {
   for (const m of MOCK_STATIONS) state.stubs.set(m.title, stub(m.title, m.pop));
   for (const g of MOCK_GHOSTS) state.stubs.set(g.title, stub(g.title, (hashString(g.title) % 100) / 100));
 
+  // tickets: a built start -> an unbuilt end, then an unbuilt start -> an unbuilt end
+  const TICKET_POOL = [
+    { from: 'Locomotive', to: 'Steam engine', links: 1, reward: 650 },
+    { from: 'Rail transport', to: 'Danube', links: 3, reward: 900 },
+    { from: 'Grand Canyon', to: 'Colorado River', links: 1, reward: 500 },
+    { from: 'Sahara', to: 'Oasis', links: 1, reward: 480 },
+  ];
+  let ticketNext = 0, ticketId = 1;
+  function addTicket() {
+    if (state.tickets.length >= 3 || ticketNext >= TICKET_POOL.length) return;
+    const t = { id: ticketId++, fromDescription: '', toDescription: '', time: 300, timeMax: 300, ...TICKET_POOL[ticketNext++] };
+    state.tickets.push(t);
+    emit('ticketAdded', { ticket: t });
+  }
+  function checkTickets(builtTitle) {
+    for (const t of [...state.tickets]) {
+      if (t.to !== builtTitle || !state.stations.has(t.from) || !trackBetween(t.from, t.to)) continue;
+      state.tickets.splice(state.tickets.indexOf(t), 1);
+      state.money += t.reward;
+      emit('ticketDone', { ticket: t, reward: t.reward });
+      addTicket();
+    }
+  }
+  /** Thumbnails to exercise every case: a picture, none, and one that fails to load. */
+  function mockThumbnail(title) {
+    const h = hashString(title) % 3;
+    if (title === 'Sahara') return 'https://upload.wikimedia.org/does-not-exist.jpg';
+    if (h === 1) return null;
+    const hue = hashString(title) % 360;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150"><rect width="200" height="150" fill="hsl(${hue},55%,60%)"/><circle cx="60" cy="50" r="28" fill="hsl(${hue},70%,85%)"/><path d="M0 150 L70 70 L120 120 L160 80 L200 150Z" fill="hsl(${hue},45%,32%)"/></svg>`;
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  }
+
   function addStation(title) {
     const p = world.placements.get(title);
     const s = MOCK_STATIONS.find((m) => m.title === title);
     const pop = s ? s.pop : (state.stubs.get(title) ? state.stubs.get(title).popularity : 0.5);
     const st = {
-      title, article: { ...stub(title, pop), summary: '', thumbnail: null, url: '', ...mockLinks(title) },
+      title, article: { ...stub(title, pop), summary: '', thumbnail: mockThumbnail(title), url: '', ...mockLinks(title) },
       q: p.q, r: p.r, uniqueLinks: 40, incomePerMin: 2, waiting: [], builtAt: state.time,
     };
     state.stations.set(title, st);
@@ -395,6 +428,7 @@ export function createMockGame({ world, buildInterval = 1.1, money = 400 }) {
       const gs = world.placeGhosts(first, [...MOCK_STATIONS.slice(1).map((m) => m.title), ...MOCK_GHOSTS.map((g) => g.title)]);
       emit('ghostsAdded', { placements: gs.placements });
       if (gs.revealed.length) emit('tilesRevealed', { tiles: gs.revealed });
+      addTicket(); addTicket();
     },
     quoteBuild(fromTitle, toTitle) {
       if (state.phase !== 'running') return { ok: false, reason: 'The game is not running.' };
@@ -435,6 +469,7 @@ export function createMockGame({ world, buildInterval = 1.1, money = 400 }) {
         state.money += amount;
         emit('routeBonus', { station: toTitle, count: waiting.length, amount });
       }
+      checkTickets(toTitle);
       return { ok: true };
     },
     quoteUpgrade(trackId) {

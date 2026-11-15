@@ -27,7 +27,7 @@ function makeGraph() {
 async function setup({ seed = 7, spawnThoughts = false, money = null, wikiOpts = {} } = {}) {
   const wiki = createFakeWiki(makeGraph(), { start: 'Hub', ...wikiOpts });
   const world = createFakeWorld();
-  const game = createGame({ wiki, world, seed, spawnThoughts });
+  const game = createGame({ wiki, world, seed, spawnThoughts, autoTrain: false, tickets: false });
   const events = [];
   for (const name of ['started', 'tilesRevealed', 'ghostsAdded', 'stationBuilt', 'trackBuilt', 'thoughtSpawned',
     'thoughtBoarded', 'thoughtDelivered', 'thoughtLost', 'trackUpgraded', 'trainsChanged', 'payday', 'toast', 'gameOver']) {
@@ -47,7 +47,7 @@ function run(game, seconds, dt = 0.1) {
 test('start flow: phases, money, events, ghosts only for real pages', async () => {
   const wiki = createFakeWiki(makeGraph(), { start: 'Hub' });
   const world = createFakeWorld();
-  const game = createGame({ wiki, world, seed: 1 });
+  const game = createGame({ wiki, world, seed: 1, autoTrain: false, tickets: false });
   assert.equal(game.state.phase, 'idle');
   const names = [];
   for (const n of ['started', 'tilesRevealed', 'ghostsAdded']) game.on(n, () => names.push(n));

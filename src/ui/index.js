@@ -4,8 +4,9 @@ import { h } from './dom.js';
 import { createCtx } from './ctx.js';
 import { createHud } from './hud.js';
 import { createGoal } from './goal.js';
-import { createBoard } from './board.js';
-import { createCard } from './card.js';
+import { createTickets } from './tickets.js';
+import { createReader } from './reader.js';
+import { createSearch } from './search.js';
 import { createBuildCard } from './buildcard.js';
 import { createToasts, createRideLabel } from './notes.js';
 import { createScreens } from './screens.js';
@@ -23,46 +24,49 @@ export function createUI({ root, game, renderer }) {
 
   const hud = createHud(ctx);
   const goal = createGoal(ctx);
-  const board = createBoard(ctx);
-  const card = createCard(ctx);
+  const tickets = createTickets(ctx);
+  const reader = createReader(ctx);
+  const search = createSearch(ctx);
   const buildCard = createBuildCard(ctx);
   const rideLabel = createRideLabel(ctx);
   const screens = createScreens(ctx);
   const sound = createSound({ game });
 
-  // Layout: gold readout top left, speed top right, the goal line top centre (its own row when
-  // narrow), then the stage under them. The stage holds the passenger queue (left), the side
-  // column (build card above station card, right; a bottom sheet when narrow) and the notes
-  // (riding label, toasts) floating top centre.
-  const side = h('div', { class: 'tot-side' }, buildCard.el, card.el);
+  // Layout: gold readout top left with the tickets under it, speed top right, the goal line top
+  // centre (its own row when narrow). The stage holds the notes (riding label, toasts). The link
+  // list is a slim panel down the right edge, only while a station is selected. The article reader is a
+  // centred panel over a dimmed map, and only exists while open. No build button: the 3D view
+  // floats it over the place being built towards.
   const notes = h('div', { class: 'tot-notes' }, rideLabel.el, toasts.el);
-  const stage = h('div', { class: 'tot-stage' }, board.el, side, notes);
-  const app = h('div', { class: 'tot tot-root' }, hud.el, hud.speed, goal.el, stage, screens.el);
+  const stage = h('div', { class: 'tot-stage' }, notes);
+  const app = h('div', { class: 'tot tot-root' }, hud.el, hud.speed, goal.el, tickets.el, stage, search.el, reader.el, screens.el);
   app.dataset.phase = state.phase === 'gameOver' ? 'over' : state.phase;
   root.append(app);
 
   // ------------------------------------------------------------ dirty flags
   // Events only mark work; it is done at most once per frame in update().
-  const dirty = { board: false, card: false, hud: false, goal: false };
+  const dirty = { tickets: false, builder: false, search: false, hud: false, goal: false };
   const on = (name, fn) => game.on(name, fn);
 
   on('toast', (e) => toasts.show(e.text, e.tone));
   on('started', (e) => {
-    dirty.board = dirty.card = dirty.hud = dirty.goal = true;
+    dirty.tickets = dirty.hud = dirty.goal = true;
     screens.render();
-    // Open the first station's card straight away: photo, title and intro text.
+    // Select the first station so its signposts show. Nothing opens.
     if (e && e.station) ctx.select(e.station.title, { kind: 'station' });
   });
   for (const name of ['stationBuilt', 'trackBuilt', 'ghostsAdded', 'trackUpgraded']) {
     on(name, () => {
-      dirty.board = dirty.card = dirty.goal = true;
+      dirty.builder = dirty.search = dirty.goal = true;
     });
   }
-  for (const name of ['thoughtSpawned', 'thoughtBoarded', 'thoughtDelivered', 'thoughtLost']) {
-    on(name, () => {
-      dirty.board = dirty.goal = true;
-    });
-  }
+  for (const name of ['thoughtDelivered', 'thoughtLost']) on(name, () => { dirty.goal = true; });
+  for (const name of ['ticketAdded', 'ticketExpired']) on(name, () => { dirty.tickets = dirty.search = true; });
+  on('ticketDone', (e) => {
+    tickets.done(e);
+    hud.pulse();
+    dirty.hud = dirty.goal = dirty.search = true;
+  });
   on('payday', (e) => {
     hud.payday(e);
     dirty.hud = true;
@@ -79,22 +83,17 @@ export function createUI({ root, game, renderer }) {
   on('gameOver', (e) => {
     ctx.stopRide();
     ctx.deselect();
+    reader.close();
     screens.onGameOver(e);
   });
 
   function flush() {
-    if (dirty.board) { dirty.board = false; board.refresh(); }
-    if (dirty.card) { dirty.card = false; card.refresh(); buildCard.refresh(); }
+    if (dirty.tickets) { dirty.tickets = false; tickets.sync(); }
+    if (dirty.builder) { dirty.builder = false; buildCard.refresh(); }
+    if (dirty.search) { dirty.search = false; search.refresh(); }
     if (dirty.hud) { dirty.hud = false; hud.update(); }
     if (dirty.goal) { dirty.goal = false; goal.update(); }
   }
-
-  const sync = () => {
-    app.classList.toggle('has-card', !!ctx.sel);
-    app.classList.toggle('has-build', !!ctx.build);
-  };
-  ctx.bus.on('selection', sync);
-  ctx.bus.on('build', sync);
 
   // ------------------------------------------------------------ map picks
   const offPick = renderer.onPick((pick) => {
@@ -105,11 +104,16 @@ export function createUI({ root, game, renderer }) {
         break;
       case 'ghost':
         // A signpost: price building towards it from the station being viewed.
-        ctx.openBuild(pick.title, ctx.sel && ctx.sel.kind === 'station' ? ctx.sel.title : null);
+        ctx.openBuild(pick.title, ctx.sel ? ctx.sel.title : null);
+        break;
+      case 'build':
+        buildCard.build(pick.title);
+        break;
+      case 'article':
+        reader.open(pick.title);
         break;
       case 'thought':
-        ctx.selectThought(pick.thoughtId);
-        break;
+        break; // ordinary passengers are no longer listed or opened anywhere
       case 'upgrade':
         ctx.report(game.upgradeTrack(pick.trackId, pick.typeId));
         dirty.goal = true;
@@ -134,6 +138,7 @@ export function createUI({ root, game, renderer }) {
     const t = e.target;
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
     if (e.key === 'Escape') {
+      if (reader.close()) { e.preventDefault(); return; }
       if (typing) return; // the search box handles its own Escape
       if (ctx.back()) e.preventDefault();
       else if (ctx.riding != null) { ctx.stopRide(); e.preventDefault(); }
@@ -161,7 +166,7 @@ export function createUI({ root, game, renderer }) {
     const p = state.phase === 'gameOver' ? 'over' : state.phase;
     app.dataset.phase = p;
     screens.render();
-    if (p === 'running' || p === 'over') dirty.board = dirty.card = dirty.hud = dirty.goal = true;
+    if (p === 'running' || p === 'over') dirty.tickets = dirty.hud = dirty.goal = true;
   }
 
   // No start button: the game starts as soon as the interface is up.
@@ -181,8 +186,7 @@ export function createUI({ root, game, renderer }) {
       if (state.phase === 'idle' || state.phase === 'loading') return;
       hud.update();
       goal.update();
-      board.update();
-      card.update();
+      tickets.update();
       buildCard.update();
       rideLabel.update();
       sound.update();

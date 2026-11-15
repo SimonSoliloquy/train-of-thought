@@ -11,7 +11,7 @@ test('integration: real world + fake wiki — build, upgrade, transfer, delivery
   const graph = makeSyntheticGraph(3, 120);
   const wiki = createFakeWiki(graph, { start: 'Article 0' });
   const world = createWorld({ seed: 3 });
-  const game = createGame({ wiki, world, seed: 3, spawnThoughts: false });
+  const game = createGame({ wiki, world, seed: 3, spawnThoughts: false, autoTrain: false, tickets: false });
   await game.start();
   assert.equal(game.state.phase, 'running');
   const ghosts = [...world.placements.values()].filter((p) => p.state === 'ghost');

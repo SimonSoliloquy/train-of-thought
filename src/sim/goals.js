@@ -49,6 +49,16 @@ const TEACHING = [
 
 export const TEACHING_GOALS = TEACHING.length;
 
+const TEACHING_AUTO = TEACHING.filter((g) => g.id !== 'first-train').map((g) => {
+  if (g.id === 'first-delivery') {
+    return { id: 'first-ticket', text: 'Complete a ticket', how: 'Work out which links lead to its destination, and build there', target: 1, rewardMult: 1.5, measure: (m) => m.tickets || 0 };
+  }
+  if (g.id === 'first-station') return { ...g, how: 'Click a signpost by your station, then the Build button on the map' };
+  if (g.id === 'first-delivery') return { ...g, how: 'Build the station a passenger is asking for' };
+  if (g.id === 'first-express') return { ...g, how: 'Click the Upgrade tag on a busy track' };
+  return g;
+});
+
 const DELIVER_TARGETS = [5, 8, 12, 16];
 
 /** Passengers to deliver in the m-th (0-based) "deliver" goal: 5, 8, 12, 16, 20, 24, ... */
@@ -68,15 +78,17 @@ export function repeatingReward(n) {
  * @param {number} inflation
  * @returns {{goal: import('../types.js').Goal, measure: (m:any)=>number}}
  */
-export function makeGoal(index, m, inflation) {
-  if (index < TEACHING.length) {
-    const g = TEACHING[index];
+export function makeGoal(index, m, inflation, autoTrain = false) {
+  // When every new track comes with its train, there is nothing to teach about adding one.
+  const teaching = autoTrain ? TEACHING_AUTO : TEACHING;
+  if (index < teaching.length) {
+    const g = teaching[index];
     return {
       goal: { id: g.id, text: g.text, how: g.how, progress: 0, target: g.target, reward: Math.round(ECON.goalRewardBase * g.rewardMult) },
       measure: g.measure,
     };
   }
-  const n = index - TEACHING.length;
+  const n = index - teaching.length;
   const reward = Math.round(repeatingReward(n) * inflation);
   if (n % 2 === 0) {
     const target = deliverTarget(n / 2);

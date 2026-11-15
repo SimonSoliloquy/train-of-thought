@@ -11,12 +11,14 @@ import { Particles, DynamicInstances } from './dynamic.js';
 import { LabelLayer } from './labels.js';
 import { CameraRig } from './camera.js';
 import { UpgradeTags } from './upgrades.js';
+import { ArticleCards } from './cards.js';
+import { gold } from './format.js';
 import { hexToWorld, worldToHex, hexKey, mulberry32 } from '../hex.js';
 import { TRAIN_TYPES } from '../config.js';
 
 const SUN_DIR = new THREE.Vector3(0.55, 0.78, 0.32).normalize();
 
-/** How the rising "+$N" looks for a delivery at a given streak: "×3" shown from 2, growing a little. Pure. */
+/** How the rising "+N gold" looks for a delivery at a given streak: "×3" shown from 2, growing a little. Pure. */
 export function deliveryFloat(streak) {
   const s = Number.isFinite(streak) ? Math.floor(streak) : 0;
   if (s < 2) return {};
@@ -100,6 +102,8 @@ export function createRenderer({ container, game, world }) {
   const confettiMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, toneMapped: false });
   const confettiGeom = new THREE.PlaneGeometry(1, 0.55);
   const confettiFx = new Particles(world3d, confettiGeom, confettiMat, { kind: 'sparkle', capacity: 256, renderOrder: 9 });
+  let buildOffer = null;      // {title, label, sub, affordable} from the UI: the on-map Build button
+  let buildOfferShown = false;
   const pickHandlers = new Set();
   const emitPick = (pick) => { for (const h of [...pickHandlers]) safe('pick handler', () => h(pick)); };
   const stations = new StationsView({
@@ -138,6 +142,7 @@ export function createRenderer({ container, game, world }) {
       }
     },
   });
+  const cards = new ArticleCards({ parent: world3d });
   const upgrades = new UpgradeTags({
     game, labels,
     groundAt: (x, z) => terrain.groundAt(x, z),
@@ -277,22 +282,34 @@ export function createRenderer({ container, game, world }) {
     if (!pos) return;
     const streak = Number.isFinite(p.streak) ? Math.floor(p.streak) : 0;
     if (Number.isFinite(p.fare) && p.fare > 0) {
-      labels.floatText(pos.x, pos.y + 1.15, pos.z, `+${money(p.fare)}`, deliveryFloat(streak));
+      labels.floatText(pos.x, pos.y + 1.15, pos.z, `+${gold(p.fare)}`, deliveryFloat(streak));
     }
     const extra = Math.min(16, Math.max(0, streak - 1) * 2);
     sparkles.burst(pos.x, pos.y + 0.55, pos.z, 18 + extra, '#ffd966', { speed: 0.7, up: 1.4, life: 0.8 });
     sparkles.burst(pos.x, pos.y + 0.55, pos.z, 8 + extra / 2, '#9ff3ff', { speed: 0.5, up: 1.8, life: 0.7 });
   });
+  /** The big celebratory burst over a station: text, small line, sparkles and a ring. */
+  function bigBurst(pos, text, sub) {
+    if (text) labels.floatText(pos.x, pos.y + 1.4, pos.z, text, { cls: 'big', dur: 2.6, rise: 1.3, pop: true, sub });
+    sparkles.burst(pos.x, pos.y + 0.6, pos.z, 46, '#ffd23f', { speed: 1.4, up: 2.4, life: 1.2, size: 0.06 });
+    sparkles.burst(pos.x, pos.y + 0.6, pos.z, 22, '#fff6c8', { speed: 0.9, up: 3.0, life: 1.1 });
+    ring(pos.x, pos.y + 0.1, pos.z, '#ffd23f', 20);
+  }
   on('routeBonus', (p) => {
     const pos = placementPos(p.station);
     if (!pos) return;
     if (Number.isFinite(p.amount) && p.amount > 0) {
       const who = Number.isFinite(p.count) && p.count > 0 ? `${p.count} passenger${p.count === 1 ? '' : 's'} can travel` : '';
-      labels.floatText(pos.x, pos.y + 1.4, pos.z, `+${money(p.amount)} route opened`, { cls: 'big', dur: 2.6, rise: 1.3, pop: true, sub: who });
-    }
-    sparkles.burst(pos.x, pos.y + 0.6, pos.z, 46, '#ffd23f', { speed: 1.4, up: 2.4, life: 1.2, size: 0.06 });
-    sparkles.burst(pos.x, pos.y + 0.6, pos.z, 22, '#fff6c8', { speed: 0.9, up: 3.0, life: 1.1 });
-    ring(pos.x, pos.y + 0.1, pos.z, '#ffd23f', 20);
+      bigBurst(pos, `+${gold(p.amount)} route opened`, who);
+    } else bigBurst(pos, '', '');
+  });
+  on('ticketDone', (p) => {
+    const t = p.ticket;
+    const pos = t && placementPos(t.to);
+    if (!pos) return;
+    const reward = Number.isFinite(p.reward) ? p.reward : t.reward;
+    bigBurst(pos, `+${gold(reward)} \u00b7 ticket complete`, `${t.from} \u2192 ${t.to}`);
+    confetti(pos.x, pos.y + 1.4, pos.z);
   });
   on('goalDone', (p) => {
     // a celebration where the player is looking
@@ -303,7 +320,7 @@ export function createRenderer({ container, game, world }) {
     goalStack = clock - lastGoalAt < 2.5 ? goalStack + 1 : 0;
     lastGoalAt = clock;
     if (goalStack === 0) confetti(x, y + 1.6, z);
-    const reward = Number.isFinite(p.reward) && p.reward > 0 ? `+${money(p.reward)}` : '';
+    const reward = Number.isFinite(p.reward) && p.reward > 0 ? `+${gold(p.reward)}` : '';
     const what = p.goal && p.goal.text ? p.goal.text : '';
     labels.floatText(x, y + 1.9 + goalStack * 0.75, z, 'Goal complete!', { cls: 'goal', dur: 3.0, rise: 1.0, pop: true, sub: [what, reward].filter(Boolean).join(' \u00b7 ') });
   });
@@ -322,7 +339,6 @@ export function createRenderer({ container, game, world }) {
   });
 
   let goalStack = 0, lastGoalAt = -1e9;
-  function money(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
 
   /** Confetti: many colours, thrown up, falling slowly. */
   function confetti(x, y, z) {
@@ -381,6 +397,14 @@ export function createRenderer({ container, game, world }) {
     for (const s of stations.pickables()) consider(s, s.r, { kind: s.kind, title: s.title });
     // passengers are small, so they only win when the click is right on them
     for (const p of stations.passengerPickables()) consider(p, 0.16, { kind: 'thought', thoughtId: p.thoughtId });
+    // the floating article card wins over the station and signposts beneath it
+    let cardPick = null;
+    for (const c of cards.pickables()) {
+      const before = best;
+      consider(c, c.r, { kind: 'article', title: c.title });
+      if (best !== before) cardPick = best;
+    }
+    if (cardPick && (!best || best.kind === 'station' || best.kind === 'ghost' || best.kind === 'article')) return cardPick;
     return best || { kind: 'none' };
   }
 
@@ -478,7 +502,22 @@ export function createRenderer({ container, game, world }) {
     safe('tracks', () => tracks.update(dt));
     safe('trains', () => trains.update(S(), dt));
     safe('stations', () => stations.update(dt, S()));
+    safe('cards', () => cards.update(dt, stations.built, S()));
     safe('upgrades', () => { upgrades.update(dt, S()); tracks.setGlow(upgrades.glowWanted()); });
+    safe('build offer', () => {
+      // The one Build button lives on the map, over the place the track would go to.
+      const pl = buildOffer && world && world.placements ? world.placements.get(buildOffer.title) : null;
+      if (!buildOffer || !pl) { if (buildOfferShown) { labels.remove('build'); buildOfferShown = false; } return; }
+      const w = hexToWorld(pl.q, pl.r);
+      const title = buildOffer.title;
+      labels.upsertTag('build', {
+        x: w.x, y: terrain.groundAt(w.x, w.z) + 1.75, z: w.z,
+        options: [{ typeId: 'build', title: buildOffer.label, sub: buildOffer.sub || '', affordable: buildOffer.affordable !== false }],
+        pinned: true, priority: 3e5, goal: buildOffer.affordable !== false,
+        onClick: () => emitPick({ kind: 'build', title }),
+      });
+      buildOfferShown = true;
+    });
     safe('particles', () => { smoke.update(dt); sparkles.update(dt); confettiFx.update(dt); });
     safe('ambient', () => updateAmbient(dt));
 
@@ -522,6 +561,9 @@ export function createRenderer({ container, game, world }) {
     setThoughtSelection(thoughtId) {
       stations.selectedThought = thoughtId == null ? null : thoughtId;
     },
+    setBuildOffer(offer) {
+      buildOffer = offer && offer.title ? offer : null;
+    },
     setRoutePreview(routes, activeStyle) {
       safe('route preview', () => tracks.setPreview(routes || null, activeStyle));
     },
@@ -549,6 +591,7 @@ export function createRenderer({ container, game, world }) {
       trains.dispose();
       disposeTrainGeometries();
       upgrades.dispose();
+      cards.dispose();
       tracks.dispose();
       stations.dispose();
       terrain.dispose();
@@ -565,6 +608,6 @@ export function createRenderer({ container, game, world }) {
       canvas.remove();
     },
     // not part of the contract: handy for debugging from the console
-    _debug: { scene, camera, renderer, terrain, stations, tracks, trains, upgrades, labels, rig, hexKey },
+    _debug: { cards, scene, camera, renderer, terrain, stations, tracks, trains, upgrades, labels, rig, hexKey },
   };
 }

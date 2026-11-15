@@ -91,7 +91,7 @@ function createMockGame() {
   const state = {
     phase: 'idle', time: 0, speed: 1, money: ECON.startMoney, score: 0, inflation: 1,
     payday: { period: PERIOD, in: PERIOD, income: 0, fares: 0, upkeep: 0, pending: 0, forecast: 0, last: null },
-    goal: null, streak: 0,
+    goal: null, streak: 0, tickets: [],
     delivered: 0, lost: 0, reputation: ECON.reputationStart, uniqueLinks: 0, bankruptIn: null,
     stations: new Map(), stubs: new Map(), tracks: [], trains: [], thoughts: [],
   };
@@ -249,6 +249,41 @@ function createMockGame() {
     }
   }
 
+  // ---- tickets: routes to find; from a built station to one not built, or between two not built
+  const TICKET_POOL = ['Maglev', 'Tram', 'Boiler', 'James Watt', 'Diesel engine', 'Thermodynamics', 'Funicular', 'Rapid transit', 'Cheese'];
+  let ticketIn = 4;
+  function addTicket() {
+    const built = [...state.stations.keys()];
+    const free = TICKET_POOL.filter((t) => !state.stations.has(t) && !state.tickets.some((k) => k.to === t || k.from === t));
+    if (free.length < 2) return;
+    const to = free[Math.floor(Math.random() * free.length)];
+    const rest = free.filter((t) => t !== to);
+    const from = Math.random() < 0.6 ? built[Math.floor(Math.random() * built.length)] : rest[Math.floor(Math.random() * rest.length)];
+    const links = 2 + Math.floor(Math.random() * 3);
+    const desc = (t) => (GHOST_STUBS[t] && GHOST_STUBS[t][1]) || '';
+    const reward0 = Math.round((ECON.ticketBase + ECON.ticketPerLink * links) * state.inflation);
+    const tk = { id: nextId++, from, to, fromDescription: desc(from), toDescription: desc(to), links, reward0, reward: reward0, time: 150, timeMax: 150 };
+    state.tickets.push(tk);
+    emit('ticketAdded', { ticket: tk });
+  }
+  function updateTickets(t) {
+    for (const tk of [...state.tickets]) {
+      tk.time -= t;
+      tk.reward = Math.round(tk.reward0 * (1 - 0.5 * (1 - Math.max(0, tk.time) / tk.timeMax)));
+      if (state.stations.has(tk.from) && state.stations.has(tk.to) && game.trackBetween(tk.from, tk.to)) {
+        drop(state.tickets, tk);
+        state.money += tk.reward;
+        emit('ticketDone', { ticket: tk, reward: tk.reward });
+      } else if (tk.time <= 0) {
+        drop(state.tickets, tk);
+        emit('ticketExpired', { ticket: tk });
+      }
+    }
+    ticketIn -= t;
+    if (ticketIn <= 0 && state.tickets.length < ECON.maxTickets) { ticketIn = 8; addTicket(); }
+  }
+  function drop(arr, x) { const i = arr.indexOf(x); if (i >= 0) arr.splice(i, 1); }
+
   const game = {
     state,
     on(name, fn) {
@@ -270,6 +305,7 @@ function createMockGame() {
       startGoal(params.has('fresh') ? 0 : 2);
       refreshForecast();
       state.phase = 'running';
+      for (let i = 0; i < ECON.maxTickets; i++) addTicket();
       emit('started', { station: state.stations.get('Rail transport') });
     },
     update(dt) {
@@ -325,6 +361,7 @@ function createMockGame() {
         }
         tr.passengers = Array.from({ length: Math.floor((Math.sin(state.time / 5 + tr.id) + 1) * 1.6) }, (_, i) => i);
       }
+      updateTickets(t);
       spawnIn -= t;
       if (spawnIn <= 0) { spawnIn = 12; spawnThought(); }
       updateGoal();
@@ -395,7 +432,7 @@ function createMockGame() {
       if (!options.length) return { ok: false, reason: 'This track is fully upgraded.' };
       const opt = typeId ? options.find((o) => o.typeId === typeId) : options.length === 1 ? options[0] : null;
       if (!opt) return { ok: false, reason: 'Choose which train to put on this track.' };
-      if (opt.cost > state.money) return { ok: false, reason: `A ${opt.name} costs $${opt.cost}; you have $${Math.floor(state.money)}.` };
+      if (opt.cost > state.money) return { ok: false, reason: `A ${opt.name} costs ${opt.cost} gold; you have ${Math.floor(state.money)}.` };
       state.money -= opt.cost;
       if (track.trainId != null) remove(state.trains, state.trains.find((t) => t.id === track.trainId));
       const train = { id: nextId++, typeId: opt.typeId, trackId: track.id, state: 'moving', t: 0.2, forward: true, atStation: track.from, passengers: [] };
@@ -487,6 +524,7 @@ function createMockGame() {
     streak() { const th = state.thoughts.find((x) => x.state === 'waiting'); if (th) deliver(th, th.at); },
     lose() { const th = state.thoughts[0]; if (th) { th.patience = 0; } },
     payday() { state.payday.in = 0.01; },
+    ticket() { const tk = state.tickets[0]; if (tk) { drop(state.tickets, tk); state.money += tk.reward; emit('ticketDone', { ticket: tk, reward: tk.reward }); } },
   };
   return game;
 }
@@ -495,16 +533,16 @@ function createMockGame() {
 
 function createMockRenderer(game, mapEl, logEl) {
   const pickers = new Set();
-  const log = { selection: null, preview: null, follow: null, focus: null, thought: null };
+  const log = { selection: null, preview: null, follow: null, focus: null, offer: null };
   const paint = () => {
     const p = log.preview ? `${log.preview.routes.length} route(s)` : 'none';
-    logEl.textContent = `ring: ${log.selection ?? '-'}  |  route preview: ${p}  |  follow: ${log.follow ?? '-'}  |  focus: ${log.focus ?? '-'}  |  thought: ${log.thought ?? '-'}`;
+    logEl.textContent = `ring: ${log.selection ?? '-'}  |  route preview: ${p}  |  follow: ${log.follow ?? '-'}  |  focus: ${log.focus ?? '-'}  |  offer: ${log.offer ? log.offer.label + ' / ' + (log.offer.sub || '') : '-'}`;
   };
   const renderer = {
     update() {},
     onPick(h) { pickers.add(h); return () => pickers.delete(h); },
     setSelection(t) { log.selection = t; paint(); drawMap(); },
-    setThoughtSelection(id) { log.thought = id; paint(); },
+    setBuildOffer(o) { log.offer = o; paint(); drawMap(); },
     setRoutePreview(routes, active) { log.preview = routes && routes.length ? { routes, active: active || 'cheap' } : null; paint(); drawMap(); },
     focus(t) { log.focus = t; paint(); },
     follow(id) { log.follow = id; paint(); },
@@ -550,7 +588,7 @@ function createMockRenderer(game, mapEl, logEl) {
         const tag = el('g', { style: 'cursor:pointer' });
         tag.append(el('rect', { x: mx - 1.6, y: my - 0.55, width: 3.2, height: 1.1, rx: 0.2, fill: o.affordable ? '#ffbf3f' : '#5a5a5a' }));
         const tx = el('text', { x: mx, y: my + 0.2, 'text-anchor': 'middle', 'font-size': 0.62, fill: '#1a1405', 'pointer-events': 'none' });
-        tx.textContent = `${o.name} $${o.cost}`;
+        tx.textContent = `${o.name} ${o.cost} gold`;
         tag.append(tx);
         tag.addEventListener('click', (e) => { e.stopPropagation(); renderer.pick({ kind: 'upgrade', trackId: tr.id, typeId: o.typeId }); });
         g.append(tag);
@@ -571,6 +609,10 @@ function createMockRenderer(game, mapEl, logEl) {
       const tx = el('text', { x: w.x, y: w.z + 1.8, 'text-anchor': 'middle', 'font-size': 0.8, fill: '#10241a', 'pointer-events': 'none' });
       tx.textContent = title;
       g.append(c, tx);
+      // the small floating article picture; a click opens the reader
+      const card = el('rect', { x: w.x - 0.7, y: w.z - 2.5, width: 1.4, height: 1.0, rx: 0.1, fill: '#e8e2d0', stroke: '#1b2a44', 'stroke-width': 0.08, style: 'cursor:zoom-in' });
+      card.addEventListener('click', (e) => { e.stopPropagation(); renderer.pick({ kind: 'article', title }); });
+      g.append(card);
     }
     for (const title of signposts()) {
       const w = pos(title);
@@ -581,6 +623,18 @@ function createMockRenderer(game, mapEl, logEl) {
       post.append(tx);
       post.addEventListener('click', (e) => { e.stopPropagation(); renderer.pick({ kind: 'ghost', title }); });
       g.append(post);
+    }
+    if (log.offer && game.placements.has(log.offer.title)) {
+      const o = log.offer, w = pos(o.title);
+      const b = el('g', { style: 'cursor:pointer', opacity: o.affordable ? 1 : 0.7 });
+      b.append(el('rect', { x: w.x - 3, y: w.z - 2.4, width: 6, height: 1.9, rx: 0.3, fill: o.affordable ? '#ffbf3f' : '#5a5a5a' }));
+      const t1 = el('text', { x: w.x, y: w.z - 1.5, 'text-anchor': 'middle', 'font-size': 0.7, 'font-weight': 700, fill: '#1a1405', 'pointer-events': 'none' });
+      t1.textContent = o.label;
+      const t2 = el('text', { x: w.x, y: w.z - 0.8, 'text-anchor': 'middle', 'font-size': 0.45, fill: '#1a1405', 'pointer-events': 'none' });
+      t2.textContent = o.sub || '';
+      b.append(t1, t2);
+      b.addEventListener('click', (e) => { e.stopPropagation(); renderer.pick({ kind: 'build', title: o.title }); });
+      g.append(b);
     }
     svg.append(g);
     mapEl.append(svg);
@@ -613,6 +667,7 @@ function drawBar() {
   lab.textContent = 'Fake picks:';
   bar.append(lab);
   for (const title of game.state.stations.keys()) add(`● ${title}`, () => renderer.pick({ kind: 'station', title }));
+  for (const title of game.state.stations.keys()) add(`article: ${title}`, () => renderer.pick({ kind: 'article', title }));
   const sel = renderer.log.selection;
   const st = sel && game.state.stations.get(sel);
   if (st) for (const t of st.article.leadLinks.filter((x) => game.placements.has(x) && !game.state.stations.has(x)).slice(0, 6)) add(`○ signpost: ${t}`, () => renderer.pick({ kind: 'ghost', title: t }));
@@ -620,12 +675,12 @@ function drawBar() {
     for (const o of game.upgradeOptions(tr)) add(`tag: ${o.name} (track ${tr.id})`, () => renderer.pick({ kind: 'upgrade', trackId: tr.id, typeId: o.typeId }));
   }
   for (const t of game.state.trains) add(`train #${t.id}`, () => renderer.pick({ kind: 'train', trainId: t.id }));
-  for (const th of game.state.thoughts.filter((x) => x.state === 'waiting').slice(0, 2)) add(`passenger #${th.id}`, () => renderer.pick({ kind: 'thought', thoughtId: th.id }));
   add('empty space', () => renderer.pick({ kind: 'none' }));
   const sp = document.createElement('span');
   sp.className = 'sp';
   bar.append(sp);
-  add('+$1000', () => game.debug.cash(), 'dbg');
+  add('+1000 gold', () => game.debug.cash(), 'dbg');
+  add('finish ticket', () => game.debug.ticket(), 'dbg');
   add('finish goal', () => game.debug.finishGoal(), 'dbg');
   add('deliver one', () => game.debug.streak(), 'dbg');
   add('lose one', () => game.debug.lose(), 'dbg');

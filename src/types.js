@@ -36,8 +36,8 @@
  *   url: string,              article URL on wikipedia.org
  *   leadLinks: string[],      links in the lead section, in reading order, main namespace only,
  *                             deduped, no self-link, at most WIKI.maxLeadLinks
- *   links: string[],          every outbound main-namespace link, deduped, at most WIKI.maxLinks;
- *                             always a superset of leadLinks
+ *   links: string[],          every outbound main-namespace link IN ORDER OF APPEARANCE on the page,
+ *                             deduped, at most WIKI.maxLinks; always contains every lead link
  * }} Article
  */
 
@@ -223,6 +223,25 @@
  */
 
 /**
+ * A ticket: a route for the player to find and build. There are never more than ECON.maxTickets
+ * at once. `to` is always an article the player has NOT built; `from` is either a station the
+ * player has, or another article they have not built. The game does not say which links lead
+ * there: working that out is the game. A ticket is met the moment both ends are stations joined
+ * by track (every track has a train), and pays its reward in gold at once.
+ * @typedef {Object} Ticket
+ * @property {number} id
+ * @property {string} from
+ * @property {string} to
+ * @property {string} fromDescription   short description, '' if none
+ * @property {string} toDescription
+ * @property {number} links      how many links the game knows a route to need, counted from the player's
+ *                               network (a hint of distance, not the route)
+ * @property {number} reward     whole gold paid if met now; falls towards half as time runs out
+ * @property {number} time       game seconds left before the ticket is withdrawn (no penalty)
+ * @property {number} timeMax
+ */
+
+/**
  * Read-only for everyone but the sim. Objects are mutated in place between frames.
  * @typedef {Object} GameState
  * @property {'idle'|'loading'|'running'|'over'} phase
@@ -233,6 +252,8 @@
  * @property {number} inflation     current multiplier, >= 1
  * @property {Payday} payday      money changes at a payday, when the player buys something, and when a reward
  *                                (a goal or a route bonus) is paid, which is instant
+ * @property {Ticket[]} tickets  at most ECON.maxTickets; the only requests the UI lists. Ordinary passengers
+ *                                (state.thoughts) still ride between stations that exist, unlisted, for small fares
  * @property {Goal|null} goal     the one thing the game is asking for right now; doubles as the tutorial
  * @property {number} streak      deliveries in a row with no passenger giving up; each step adds
  *                                ECON.streakFarePerStep to fares, up to ECON.streakFareMax
@@ -273,6 +294,9 @@
  *   'routeBonus'       { station: string, count: number, amount: number }   building a station that passengers were
  *                      waiting for pays ECON.routeBonusFraction of each one's fare at once
  *   'goalDone'         { goal: Goal, reward: number, next: Goal|null }
+ *   'ticketAdded'      { ticket: Ticket }
+ *   'ticketDone'       { ticket: Ticket, reward: number }     paid at once
+ *   'ticketExpired'    { ticket: Ticket }
  *   'thoughtLost'      { thought: Thought }
  *   'trackUpgraded'    { track: Track, train: Train }
  *   'trainsChanged'    { }
@@ -307,10 +331,12 @@
 // ---------------------------------------------------------------- render
 
 /**
- * @typedef {{kind: 'station'|'ghost', title: string} | {kind: 'train', trainId: number} | {kind: 'thought', thoughtId: number} | {kind: 'upgrade', trackId: number, typeId: string} | {kind: 'none'}} Pick
+ * @typedef {{kind: 'station'|'ghost', title: string} | {kind: 'train', trainId: number} | {kind: 'thought', thoughtId: number} | {kind: 'upgrade', trackId: number, typeId: string} | {kind: 'build', title: string} | {kind: 'article', title: string} | {kind: 'none'}} Pick
  *   'ghost' is a click on a link signpost (or the marker of the link being priced).
  *   'thought' is a click on a passenger waiting on a platform.
  *   'upgrade' is a click on a track's upgrade tag; the UI then calls game.upgradeTrack(trackId, typeId).
+ *   'build' is a click on the Build button floating over the place being built towards.
+ *   'article' is a click on the small picture floating over a station: the UI opens that article to read.
  *
  * The renderer subscribes to game events itself and reads game.state every frame.
  * It draws, without being asked:
@@ -319,13 +345,22 @@
  *     when there is a choice; tracks with an affordable upgrade are highlighted;
  *   - "+$N" rising from a station when a thought is delivered there ('thoughtDelivered'), with the
  *     streak when it is 2 or more; a bigger burst for 'routeBonus' and for 'goalDone';
+ *   - over every built station, its article's picture (Station.article.thumbnail) as a very small card
+ *     that floats and slowly turns; clicking it is Pick { kind: 'article', title };
+ *   - a burst and "+N gold" for 'ticketDone';
+ *   - every amount as gold, never dollars: "326 gold", "+140 gold";
  *   - on each link signpost: the price to build there (game.quoteBuild) and, when passengers are
  *     waiting to go there, how many and what they will pay; such signposts stand out.
+ *     A signpost that is a ticket's destination, or a ticket's unbuilt starting point, stands out most
+ *     and says so ("Ticket · +650 gold", "Ticket start").
  * @typedef {Object} Renderer
  * @property {(dt: number) => void} update          real seconds
  * @property {(handler: (pick: Pick) => void) => () => void} onPick   click (not drag) on the 3D view
  * @property {(title: string|null) => void} setSelection   ring/highlight on one station, with its link signposts, or the marker of an unbuilt link
  * @property {(thoughtId: number|null) => void} setThoughtSelection   the station's speech bubble follows this waiting passenger
+ * @property {(offer: {title: string, label: string, sub?: string, affordable?: boolean}|null) => void} setBuildOffer
+ *   The one Build button. It floats on the map over the place being built towards (never in a side
+ *   panel); a click on it arrives as Pick { kind: 'build', title }. null removes it.
  * @property {(routes: Route[]|null, activeStyle?: 'cheap'|'direct') => void} setRoutePreview
  *   Draws a proposed route over the terrain.
  * @property {(title: string) => void} focus        glide the camera to a station or ghost
@@ -337,13 +372,19 @@
 
 /**
  * As few buttons and as few numbers as possible; a new player must understand it without
- * reading instructions. The UI starts the game by itself on load (calls game.start()), and owns:
+ * reading instructions. Nothing permanent covers the map except small readouts at its edges.
+ * The UI starts the game by itself on load (calls game.start()), and owns:
  *   - one small gold readout: gold, and what the next payday will bring, with its countdown;
- *   - one goal line (state.goal): what to do now, how, and the reward;
- *   - the passenger queue, collapsed to a count until opened;
- *   - a slim station card (title, photo, a line or two of text, a search box for other links);
- *   - the one-button build card; the passenger card; toasts; the game-over screen;
- *   - sound effects.
+ *   - one goal line (state.goal);
+ *   - the tickets (state.tickets, at most three), always visible: from, to, how many links away,
+ *     the reward, and the time left;
+ *   - the article reader: opened only when the player clicks a station's floating picture
+ *     (Pick 'article'), closed by Esc or a click outside it;
+ *   - a small search box for a selected station's other links;
+ *   - toasts, the game-over screen, sound effects.
+ * There is NO build or buy button in the UI: the Build button floats on the map over the place
+ * being built towards (renderer.setBuildOffer; Pick 'build'), and train upgrades are tags on the
+ * tracks (Pick 'upgrade'). Amounts are gold, never dollars ("326 gold").
  * It calls Game actions and Renderer methods; nothing calls into it except update().
  * @typedef {Object} UI
  * @property {(dt: number) => void} update   real seconds; refresh live numbers

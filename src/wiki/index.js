@@ -3,6 +3,7 @@
 import { WIKI } from '../config.js';
 import { createClient } from './http.js';
 import { extractLeadCandidates } from './lead.js';
+import { extractWikitextLinks, orderLinks } from './order.js';
 import { FALLBACK_STARTS } from './fallback.js';
 
 const LIST_PREFIXES = ['List of ', 'Lists of ', 'Outline of ', 'Index of ', 'Timeline of '];
@@ -113,6 +114,22 @@ function boundedSet(map, key, value) {
  * }} [options]
  * @returns {import('../types.js').WikiApi & { stats: {requests:number, attempts:number, retries:number}, clearCache: () => void }}
  */
+const FEATURED_CATEGORY = 'Category:Featured articles';
+const FEATURED_SAMPLE = 40;
+const FEATURED_ROUNDS = 3;
+const FEATURED_TRIES = 5;
+
+/** A random sort-key prefix ("Mo", "T") for jumping into the featured-articles category. Pure. */
+export function featuredPrefix(random, letters = 2) {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const a = 'abcdefghijklmnopqrstuvwxyz';
+  let out = A[Math.min(25, Math.floor(random() * 26))];
+  for (let i = 1; i < letters; i++) out += a[Math.min(25, Math.floor(random() * 26))];
+  return out;
+}
+
+const REDIRECT_RESOLVE_CAP = 200; // written link targets to resolve per article (4 requests at most)
+
 export function createWiki(options = {}) {
   const apiUrl = options.apiUrl || WIKI.apiUrl;
   const random = options.random || Math.random;
@@ -336,6 +353,15 @@ export function createWiki(options = {}) {
     return out; // may contain duplicates / self; cleaned once the article's own title is known
   }
 
+  /** Link targets as written on the page, in reading order (redirects not yet resolved). */
+  async function fetchWrittenLinks(key) {
+    const body = await client.get({ action: 'parse', page: key, prop: 'wikitext', redirects: 1 });
+    const wt = body.parse && body.parse.wikitext;
+    const text = typeof wt === 'string' ? wt : wt && typeof wt['*'] === 'string' ? wt['*'] : null;
+    if (text === null) throw new Error(`No wikitext for "${key}"`);
+    return extractWikitextLinks(text);
+  }
+
   async function fetchAllLinks(key) {
     const titles = [];
     const seen = new Set();
@@ -356,7 +382,7 @@ export function createWiki(options = {}) {
   }
 
   async function loadArticle(key) {
-    const [metaR, leadR, linksR] = await Promise.allSettled([fetchMeta(key), fetchLeadLinks(key), fetchAllLinks(key)]);
+    const [metaR, leadR, linksR, writtenR] = await Promise.allSettled([fetchMeta(key), fetchLeadLinks(key), fetchAllLinks(key), fetchWrittenLinks(key)]);
     if (metaR.status === 'rejected') throw metaR.reason;
     if (!metaR.value) throw new Error(`Wikipedia has no article titled "${key}"`);
     if (leadR.status === 'rejected') throw leadR.reason;
@@ -372,13 +398,38 @@ export function createWiki(options = {}) {
       leadLinks.push(t);
       if (leadLinks.length >= WIKI.maxLeadLinks) break;
     }
-    const links = [...leadLinks];
-    const linkSeen = new Set([title, ...leadLinks]);
-    for (const t of linksR.value) {
-      if (links.length >= WIKI.maxLinks) break;
-      if (linkSeen.has(t)) continue;
-      linkSeen.add(t);
-      links.push(t);
+    // Every link in order of appearance on the page. The API lists links alphabetically, so the
+    // order comes from the wikitext; written targets that are redirects are resolved (a few
+    // batched lookups at most). If the wikitext cannot be had, fall back to lead links first.
+    let links = null;
+    if (writtenR.status === 'fulfilled' && writtenR.value.length) {
+      const known = new Set(linksR.value);
+      const unresolved = writtenR.value.filter((w) => !known.has(w)).slice(0, REDIRECT_RESOLVE_CAP);
+      let resolved = new Map();
+      try {
+        resolved = unresolved.length ? await lookup(unresolved) : resolved;
+      } catch {
+        resolved = new Map();
+      }
+      const canonical = (w) => {
+        const e = resolved.get(w);
+        return e && e.ns === 0 ? e.title : null;
+      };
+      links = orderLinks(writtenR.value, canonical, [...leadLinks, ...linksR.value], title, WIKI.maxLinks);
+    }
+    if (!links) {
+      links = [...leadLinks];
+      const linkSeen = new Set([title, ...leadLinks]);
+      for (const t of linksR.value) {
+        if (links.length >= WIKI.maxLinks) break;
+        if (linkSeen.has(t)) continue;
+        linkSeen.add(t);
+        links.push(t);
+      }
+    } else {
+      // links must always contain every lead link
+      const have = new Set(links);
+      for (const t of leadLinks) if (!have.has(t)) links.push(t);
     }
 
     const entry = {
@@ -445,7 +496,47 @@ export function createWiki(options = {}) {
     return cands.map((e) => ({ title: e.title, popularity: pops.get(e.title) ?? 0 })).sort((a, b) => b.popularity - a.popularity);
   }
 
+  /** A handful of Wikipedia's featured articles, from a random place in the alphabet. */
+  async function featuredRound() {
+    for (const prefix of [featuredPrefix(random, 2), featuredPrefix(random, 1)]) {
+      const body = await client.get({
+        action: 'query', list: 'categorymembers', cmtitle: FEATURED_CATEGORY, cmnamespace: 0,
+        cmlimit: FEATURED_SAMPLE, cmsort: 'sortkey', cmstartsortkeyprefix: prefix,
+      });
+      const titles = ((body.query && body.query.categorymembers) || []).filter((m) => m.ns === 0).map((m) => m.title);
+      if (titles.length >= 5) {
+        // shuffle, so the pick is not always the first title after the prefix
+        for (let i = titles.length - 1; i > 0; i--) {
+          const j = Math.floor(random() * (i + 1));
+          [titles[i], titles[j]] = [titles[j], titles[i]];
+        }
+        return titles;
+      }
+    }
+    return [];
+  }
+
   async function randomStart() {
+    // The start is one of Wikipedia's featured articles (Wikipedia:Featured articles): its best
+    // pages, with pictures and plenty of links. Only if that list cannot be reached does the
+    // game fall back to a well-known random article.
+    for (let round = 0; round < FEATURED_ROUNDS; round++) {
+      let titles = [];
+      try {
+        titles = await featuredRound();
+      } catch {
+        continue;
+      }
+      for (const title of titles.slice(0, FEATURED_TRIES)) {
+        try {
+          const article = await getArticle(title);
+          if (goodStart(article)) return article;
+        } catch {
+          // try the next one
+        }
+      }
+    }
+
     let best = null;
     for (let round = 0; round < RANDOM_ROUNDS; round++) {
       let cands = [];

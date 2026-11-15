@@ -3,15 +3,15 @@ import assert from 'node:assert/strict';
 import * as f from './format.js';
 
 test('money, signed amounts and costs', () => {
-  assert.equal(f.fmtMoney(1234567.4), '$1,234,567');
-  assert.equal(f.fmtMoney(-56.6), '-$57');
-  assert.equal(f.fmtMoney(-0.2), '$0');
-  assert.equal(f.fmtMoney(NaN), '$0');
-  assert.equal(f.fmtSigned(87.2), '+$87');
-  assert.equal(f.fmtSigned(-12), '-$12');
-  assert.equal(f.fmtSigned(0), '$0');
-  assert.equal(f.fmtCost(11), '\u2212$11');
-  assert.equal(f.fmtCost(0), '$0');
+  assert.equal(f.fmtMoney(1234567.4), '1,234,567 gold');
+  assert.equal(f.fmtMoney(1000), '1,000 gold');
+  assert.equal(f.fmtMoney(-56.6), '-57 gold');
+  assert.equal(f.fmtMoney(NaN), '0 gold');
+  assert.equal(f.fmtSigned(87.2), '+87 gold');
+  assert.equal(f.fmtSigned(-12), '-12 gold');
+  assert.equal(f.fmtSigned(0), '0 gold');
+  assert.equal(f.fmtCost(11), '\u221211 gold');
+  assert.equal(f.fmtCost(0), '0 gold');
   assert.equal(f.fmtInt(-1234), '-1,234');
 });
 
@@ -25,25 +25,25 @@ test('durations and countdowns', () => {
 
 test('paydayView: forecast text and bar fraction', () => {
   const v = f.paydayView({ period: 10, in: 6, forecast: 87.4 });
-  assert.equal(v.text, '+$87 in 6s');
+  assert.equal(v.text, '+87 gold in 6s');
   assert.ok(Math.abs(v.fraction - 0.4) < 1e-9);
   assert.equal(v.negative, false);
   const n = f.paydayView({ period: 10, in: 0.2, forecast: -15 });
-  assert.equal(n.text, '-$15 in 1s');
+  assert.equal(n.text, '-15 gold in 1s');
   assert.equal(n.negative, true);
-  assert.equal(f.paydayView(undefined).text, '$0 in 10s');
+  assert.equal(f.paydayView(undefined).text, '0 gold in 10s');
   assert.equal(f.paydayView({ period: 10, in: 25, forecast: 0 }).fraction, 0);
 });
 
 test('paydayBreakdown: the amount and where it came from', () => {
   const b = f.paydayBreakdown({ amount: 87, income: 3, fares: 95, upkeep: 11 });
-  assert.equal(b.headline, '+$87');
+  assert.equal(b.headline, '+87 gold');
   assert.equal(b.negative, false);
-  assert.equal(b.detail, 'stations +$3 \u00b7 fares +$95 \u00b7 costs \u2212$11');
+  assert.equal(b.detail, 'stations +3 gold \u00b7 fares +95 gold \u00b7 costs \u221211 gold');
   const n = f.paydayBreakdown({ amount: -20, income: 0, fares: 0, upkeep: 20 });
   assert.equal(n.negative, true);
-  assert.equal(n.headline, '-$20');
-  assert.equal(f.paydayBreakdown(undefined).headline, '$0');
+  assert.equal(n.headline, '-20 gold');
+  assert.equal(f.paydayBreakdown(undefined).headline, '0 gold');
 });
 
 test('bankruptcy countdown replaces the payday text', () => {
@@ -69,12 +69,12 @@ test('speed label says Paused plainly', () => {
 
 test('goalView: text, progress only when target > 1, reward, how', () => {
   const g = f.goalView({ text: 'Deliver 5 passengers', how: 'Click the price tag on a track', progress: 3, target: 5, reward: 100 });
-  assert.deepEqual(g, { text: 'Deliver 5 passengers', progress: '3/5', reward: '+$100', how: 'Click the price tag on a track' });
+  assert.deepEqual(g, { text: 'Deliver 5 passengers', progress: '3/5', reward: '+100 gold', how: 'Click the price tag on a track' });
   assert.equal(f.goalView({ text: 'Build a station', progress: 0, target: 1, reward: 100 }).progress, '');
   assert.equal(f.goalView({ text: 'x', progress: 9, target: 5, reward: 0 }).progress, '5/5');
   assert.equal(f.goalView({ text: 'x', progress: 9, target: 5, reward: 0 }).reward, '');
   assert.equal(f.goalView(null), null);
-  assert.equal(f.goalDoneText(100), 'Done! +$100');
+  assert.equal(f.goalDoneText(100), 'Done! +100 gold');
   assert.equal(f.goalDoneText(0), 'Done!');
 });
 
@@ -90,38 +90,6 @@ test('thumbnail urls are restricted to Wikimedia https hosts', () => {
 
 const state = () => ({
   stations: new Map([['A', { article: { links: ['B', 'C', 'A2'] } }], ['B', { article: { links: ['A'] } }], ['D', { article: { links: [] } }]]),
-  stubs: new Map([['A', {}], ['B', {}], ['D', {}], ['C', {}]]),
-});
-
-test('map status: built, one link away, not linked', () => {
-  const s = state();
-  assert.equal(f.mapStatus('A', s), 'built');
-  assert.equal(f.mapStatus('C', s), 'ghost');
-  assert.equal(f.mapStatus('A2', s), 'ghost'); // linked by A though never surveyed
-  assert.equal(f.mapStatus('Z', s), 'absent');
-  s.stations.set('E', { article: { links: ['Z'] } });
-  assert.equal(f.mapStatus('Z', s), 'ghost'); // cache follows new stations
-});
-
-test('premium pages say why they cost more, in plain words', () => {
-  assert.equal(f.kindInfo('list').premium, true);
-  assert.equal(f.kindInfo('disambiguation').premium, true);
-  assert.equal(f.kindInfo('article').premium, false);
-  assert.equal(f.premiumNote('list', 5), 'This page costs 5\u00d7 because it is a list');
-  assert.equal(f.premiumNote('disambiguation', 5), 'This page costs 5\u00d7 because it only points to other pages');
-  assert.equal(f.premiumNote('article', 5), '');
-  assert.ok(!/disambiguation/i.test(f.premiumNote('disambiguation', 5)));
-});
-
-test('thoughts sort by urgency', () => {
-  const t = [{ id: 1, patience: 50 }, { id: 2, patience: 10 }, { id: 3, patience: 10 }, { id: 4, patience: 90 }];
-  assert.deepEqual(f.sortThoughts(t).map((x) => x.id), [2, 3, 1, 4]);
-  assert.deepEqual(t.map((x) => x.id), [1, 2, 3, 4]);
-  assert.equal(f.patienceFraction({ patience: 30, patienceMax: 60 }), 0.5);
-  assert.equal(f.patienceFraction({ patience: -5, patienceMax: 60 }), 0);
-  assert.equal(f.patienceTone(0.8), 'ok');
-  assert.equal(f.patienceTone(0.3), 'warn');
-  assert.equal(f.patienceTone(0.1), 'bad');
 });
 
 test('filterLinks: lead first, filter, limit, no duplicates', () => {
@@ -166,8 +134,8 @@ test('summarizeQuote, terrainText and the quiet price line', () => {
   assert.equal(s.bridges, 2);
   assert.equal(s.tunnels, 1);
   assert.equal(s.ledges, 1);
-  assert.equal(f.quoteLine(s), 'track $204 \u00b7 station $131 \u00b7 2 bridges, 1 tunnel, 1 ledge');
-  assert.equal(f.quoteLine({ trackCost: 50, stationCost: 0, bridges: 0, tunnels: 0, ledges: 0 }), 'track $50');
+  assert.equal(f.quoteLine(s), 'track 204 \u00b7 station 131 \u00b7 2 bridges, 1 tunnel, 1 ledge');
+  assert.equal(f.quoteLine({ trackCost: 50, stationCost: 0, bridges: 0, tunnels: 0, ledges: 0 }), 'track 50');
   assert.equal(f.terrainText({ bridges: 0, tunnels: 0, ledges: 0 }), 'all ground');
   assert.equal(f.quoteAffordable(q, 334), false);
   assert.equal(f.quoteAffordable(q, 335), true);
@@ -180,96 +148,53 @@ test('needsRequote', () => {
   assert.equal(f.needsRequote(0, 1), true);
 });
 
-test('passenger thoughts name the real obstacle and get angrier', () => {
-  assert.equal(f.passengerMood(0.9), 0);
-  assert.equal(f.passengerMood(0.4), 1);
-  assert.equal(f.passengerMood(0.1), 2);
-  const seen = new Set();
-  for (const state of ['waiting', 'riding']) {
-    for (const where of ['unknown', 'ghost', 'unlinked', 'served']) {
-      for (const mood of [0, 1, 2]) {
-        for (const variant of [0, 1, 7]) {
-          const line = f.thoughtLine({ to: 'Theatre', state, mood, where, variant });
-          assert.equal(typeof line, 'string');
-          assert.ok(line.includes('Theatre'), line);
-          seen.add(line);
-        }
-      }
-    }
-  }
-  assert.ok(seen.size >= 24 + 6, 'each situation and mood has its own wording');
-  assert.match(f.thoughtLine({ to: 'X', state: 'waiting', mood: 2, where: 'ghost' }), /track/i);
-  assert.match(f.thoughtLine({ to: 'X', state: 'waiting', mood: 1, where: 'unlinked' }), /train|service/i);
+test('passenger helpers are gone, gold wording everywhere', () => {
+  assert.equal(f.needMoreText(335, 215), '120 more gold needed');
+  assert.equal(f.needMoreText(335, 214.5), '121 more gold needed');
+  assert.equal(f.needMoreText(10, 50), '0 more gold needed');
+  assert.equal(f.queueStatus, undefined);
 });
 
-test('networkReachable follows running tracks (level 1+) in both directions and across transfers', () => {
-  const tracks = [
-    { from: 'A', to: 'B', level: 1 }, { from: 'B', to: 'C', level: 2 }, { from: 'C', to: 'D', level: 3 },
-    { from: 'D', to: 'E', level: 0 }, { from: 'X', to: 'Y', level: 1 },
-  ];
-  assert.equal(f.networkReachable(tracks, 'A', 'A'), true);
-  assert.equal(f.networkReachable(tracks, 'A', 'D'), true);
-  assert.equal(f.networkReachable(tracks, 'D', 'A'), true);
-  assert.equal(f.networkReachable(tracks, 'A', 'E'), false); // bare track has no train
-  assert.equal(f.networkReachable(tracks, 'A', 'Y'), false);
-  assert.equal(f.networkReachable([], 'A', 'B'), false);
+test('buildOffer: label, one short sub line, affordability', () => {
+  const kinds = ['ground', 'ground', 'bridge', 'ground'];
+  const q = { style: 'cheap', trackCost: 204, stationCost: 122, total: 326, route: { hexes: kinds.map((kind, i) => ({ q: i, r: 0, kind })) } };
+  const base = { title: 'Maglev', quote: q, money: 1000, inflight: false, ticket: null };
+  assert.deepEqual(f.buildOffer(base), { title: 'Maglev', label: 'Build \u00b7 326 gold', sub: 'track 204 \u00b7 station 122 \u00b7 1 bridge', affordable: true });
+  assert.equal(f.buildOffer({ ...base, ticket: { reward: 650.4 } }).sub, 'Ticket \u00b7 +650 gold');
+  const poor = f.buildOffer({ ...base, money: 206, ticket: { reward: 650 } });
+  assert.equal(poor.sub, '120 more gold needed');
+  assert.equal(poor.affordable, false);
+  const busy = f.buildOffer({ ...base, money: 0, inflight: true });
+  assert.equal(busy.label, 'Building\u2026');
+  assert.equal(busy.affordable, false);
+  assert.ok(!busy.sub.includes('more gold'));
+  for (const o of [f.buildOffer(base), poor, busy]) assert.ok(!/\$/.test(o.label + o.sub));
 });
 
-test('destinationStatus tells unknown, ghost, unlinked and served apart', () => {
-  const state = {
-    stations: new Map([['A', { article: { links: ['G'] } }], ['B', { article: { links: [] } }], ['C', { article: { links: [] } }]]),
-    stubs: new Map(),
-    tracks: [{ from: 'A', to: 'B', level: 1 }],
-  };
-  const th = (to) => ({ from: 'A', at: 'A', to });
-  assert.equal(f.destinationStatus(th('Nowhere'), state), 'unknown');
-  assert.equal(f.destinationStatus(th('G'), state), 'ghost');
-  assert.equal(f.destinationStatus(th('C'), state), 'unlinked');
-  assert.equal(f.destinationStatus(th('B'), state), 'served');
+test('ticket rows: route, distance, both ends, reward, time', () => {
+  const t = { from: 'Boiler', to: 'Maglev', links: 3, reward: 650.2, time: 60, timeMax: 240 };
+  const built = (title) => title === 'Boiler';
+  const v = f.ticketView(t, built);
+  assert.equal(v.route, 'Boiler \u2192 Maglev');
+  assert.equal(v.how, 'about 3 links away');
+  assert.equal(v.reward, '+650 gold');
+  assert.equal(v.fromBuilt, true);
+  assert.equal(v.fraction, 0.25);
+  assert.equal(v.tone, 'bad');
+  assert.equal(f.ticketView(t, () => false).how, 'about 3 links away \u00b7 build both ends');
+  assert.equal(f.ticketDistance(1), 'about 1 link away');
+  assert.equal(f.ticketDistance(undefined), 'about 1 link away');
+  assert.equal(f.ticketTimeFraction({ time: -4, timeMax: 10 }), 0);
+  assert.equal(f.ticketTimeFraction({ time: 4, timeMax: 0 }), 0);
+  assert.equal(f.ticketTone(0.9), 'ok');
+  assert.equal(f.ticketTone(0.4), 'warn');
 });
 
-test('reputationInfo reports a percentage, a word and its effects', () => {
-  const econ = { reputationFareMin: 0.7, reputationFareMax: 1.3, reputationCrowdMin: 0.7, reputationCrowdMax: 1.3 };
-  const mid = f.reputationInfo(0.5, econ);
-  assert.equal(mid.percent, 50);
-  assert.ok(Math.abs(mid.fare - 1) < 1e-9 && Math.abs(mid.crowd - 1) < 1e-9);
-  assert.equal(f.reputationInfo(0, econ).fare, 0.7);
-  assert.equal(f.reputationInfo(1, econ).crowd, 1.3);
-  assert.equal(f.reputationInfo(0.1, econ).tone, 'bad');
-  assert.equal(f.reputationInfo(0.9, econ).tone, 'ok');
-  assert.equal(f.reputationInfo(undefined, econ).percent, 50);
-  assert.equal(f.reputationInfo(7, econ).percent, 100);
-});
-
-test('passengers label and the route bonus', () => {
-  assert.equal(f.passengersLabel(0), 'No passengers waiting');
-  assert.equal(f.passengersLabel(1), '1 passenger waiting');
-  assert.equal(f.passengersLabel(12), '12 passengers waiting');
-  const ts = [
-    { state: 'waiting', to: 'X', fare: 100 }, { state: 'waiting', to: 'X', fare: 110 },
-    { state: 'waiting', to: 'Y', fare: 500 }, { state: 'riding', to: 'X', fare: 999 }, { state: 'waiting', to: 'X', fare: 0.4 },
-  ];
-  assert.equal(f.waitingCount(ts), 4);
-  const b = f.waitingBonus(ts, 'X', 0.5);
-  assert.deepEqual(b, { count: 3, amount: 105 });
-  assert.equal(f.bonusLine(b), '3 passengers waiting \u00b7 pays +$105 now');
-  assert.equal(f.bonusLine(f.waitingBonus(ts, 'Y', 0.5)), '1 passenger waiting \u00b7 pays +$250 now');
-  assert.equal(f.bonusLine(f.waitingBonus(ts, 'Z', 0.5)), '');
-  assert.equal(f.needMoreText(335, 215), '$120 more gold needed');
-  assert.equal(f.needMoreText(335, 214.5), '$121 more gold needed');
-});
-
-test('queue status words', () => {
-  const state = {
-    stations: new Map([['A', { article: { links: ['G'] } }], ['B', { article: { links: [] } }], ['C', { article: { links: [] } }]]),
-    stubs: new Map(),
-    tracks: [{ from: 'A', to: 'B', level: 1 }],
-  };
-  const th = (to, extra) => ({ from: 'A', at: 'A', to, state: 'waiting', ...extra });
-  assert.equal(f.queueStatus(th('B', { state: 'riding', at: null }), state), 'riding');
-  assert.equal(f.queueStatus(th('B'), state), 'coming');
-  assert.equal(f.queueStatus(th('C'), state), 'train');
-  assert.equal(f.queueStatus(th('G'), state), 'link');
-  assert.equal(f.queueStatus(th('Nowhere'), state), 'far');
-  assert.deepEqual(Object.values(f.QUEUE_STATUS), ['On the way', 'Train coming', 'Needs a train', 'Build it: one link away', 'Not linked yet']);
+test('article links are https wikipedia only', () => {
+  assert.equal(f.safeArticleUrl('https://en.wikipedia.org/wiki/Rail_transport'), 'https://en.wikipedia.org/wiki/Rail_transport');
+  assert.equal(f.safeArticleUrl('http://en.wikipedia.org/wiki/X'), null);
+  assert.equal(f.safeArticleUrl('https://evilwikipedia.org/x'), null);
+  assert.equal(f.safeArticleUrl('https://en.wikipedia.org.evil.example/x'), null);
+  assert.equal(f.safeArticleUrl('javascript:alert(1)'), null);
+  assert.equal(f.safeArticleUrl(undefined), null);
 });

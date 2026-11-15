@@ -288,3 +288,35 @@ test('randomStart: falls back to the hard-coded list when random sampling finds 
   const a = await wiki.randomStart();
   assert.equal(a.title, FALLBACK_STARTS[0]);
 });
+
+test('links in order of appearance come from the wikitext', async () => {
+  const { extractWikitextLinks, normalizeTarget, orderLinks } = await import('./order.js');
+  assert.equal(normalizeTarget('steam_engine#History'), 'Steam engine');
+  assert.equal(normalizeTarget(':Category:Trains'), null);
+  assert.equal(normalizeTarget('File:Loco.jpg'), null);
+  assert.equal(normalizeTarget('fr:Locomotive'), null);
+  assert.equal(normalizeTarget('Star Trek: The Next Generation'), 'Star Trek: The Next Generation');
+  assert.equal(normalizeTarget('#Section only'), null);
+  const wt = `{{Infobox|maker=[[James Watt]]}} A '''locomotive''' is a [[rail transport]] vehicle.<!-- [[Hidden]] -->
+It may use a [[steam engine|steam]] or [[Diesel engine]]s. See [[rail transport]] and [[File:X.jpg|thumb|a [[boiler]]]]
+<nowiki>[[Not a link]]</nowiki> [[Category:Vehicles]] [[USA]]`;
+  const written = extractWikitextLinks(wt);
+  assert.deepEqual(written, ['James Watt', 'Rail transport', 'Steam engine', 'Diesel engine', 'Boiler', 'USA']);
+  const known = ['Boiler', 'Diesel engine', 'James Watt', 'Navbox only', 'Rail transport', 'Steam engine', 'United States'];
+  const canonical = (w) => (w === 'USA' ? 'United States' : null);
+  assert.deepEqual(
+    orderLinks(written, canonical, known, 'Locomotive'),
+    ['James Watt', 'Rail transport', 'Steam engine', 'Diesel engine', 'Boiler', 'United States', 'Navbox only'],
+  );
+  // never the page itself, never a link the page does not have, capped
+  assert.deepEqual(orderLinks(['Locomotive', 'Ghost', 'Boiler'], () => null, ['Boiler', 'Locomotive'], 'Locomotive'), ['Boiler']);
+  assert.equal(orderLinks(written, canonical, known, 'Locomotive', 3).length, 3);
+});
+
+test('featuredPrefix gives a capital letter then lower-case letters, from the whole alphabet', async () => {
+  const { featuredPrefix } = await import('./index.js');
+  assert.equal(featuredPrefix(() => 0, 2), 'Aa');
+  assert.equal(featuredPrefix(() => 0.999999, 2), 'Zz');
+  assert.equal(featuredPrefix(() => 0.5, 1), 'N');
+  assert.match(featuredPrefix(Math.random, 2), /^[A-Z][a-z]$/);
+});

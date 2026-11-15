@@ -1,5 +1,5 @@
-// Shared UI controller state: what is selected, which link is being priced for a build,
-// which train the camera is riding. Components talk to each other through this and its bus.
+// Shared UI controller state: which built station is selected, which link is being priced for a
+// build, which train the camera is riding. Components talk through this and its bus.
 import { createBus } from './dom.js';
 
 export function createCtx({ game, renderer, toast }) {
@@ -12,7 +12,7 @@ export function createCtx({ game, renderer, toast }) {
     state,
     bus,
     toast,
-    /** { kind: 'station', title } | { kind: 'thought', id, title } | null */
+    /** the selected built station: { kind: 'station', title } | null */
     sel: null,
     /** the link being priced: { to, from } where from is the station the player came from (or null) */
     build: null,
@@ -39,7 +39,7 @@ export function createCtx({ game, renderer, toast }) {
     /** The title the 3D view should ring: the link being priced, else the selected station. */
     ringTitle() {
       if (ctx.build) return ctx.build.to;
-      return ctx.sel && ctx.sel.kind === 'station' ? ctx.sel.title : null;
+      return ctx.sel ? ctx.sel.title : null;
     },
 
     syncRing() {
@@ -47,19 +47,18 @@ export function createCtx({ game, renderer, toast }) {
     },
 
     /**
-     * Select a built station (opens its card, closes any build card). A title that is not a
-     * built station opens the build card for it instead.
-     * opts: from (station the player came from), focus, kind ('ghost' when state has not caught up)
+     * Select a built station (the 3D view then shows its signposts) and end any pricing.
+     * A title that is not a built station is priced instead.
+     * opts: from, focus, kind ('station' | 'ghost' when state has not caught up)
      */
     select(title, opts = {}) {
       if (!title) return ctx.deselect();
       const kind = opts.kind || ctx.kindOf(title);
-      if (kind === 'ghost') return ctx.openBuild(title, opts.from, opts);
+      if (kind === 'ghost') return ctx.openBuild(title, opts.from);
       if (kind !== 'station') return;
       ctx.sel = { kind: 'station', title };
       ctx.build = null;
       ctx.lastBuilt = title;
-      if (renderer.setThoughtSelection) renderer.setThoughtSelection(null);
       ctx.syncRing();
       if (opts.focus) renderer.focus(title);
       bus.emit('selection');
@@ -67,11 +66,10 @@ export function createCtx({ game, renderer, toast }) {
     },
 
     /** Price building towards `to` (a link, or an already-built station to join). */
-    openBuild(to, from, opts = {}) {
+    openBuild(to, from) {
       ctx.build = { to, from: from || null };
       if (from) ctx.lastBuilt = from;
       ctx.syncRing();
-      if (opts.focus) renderer.focus(to);
       bus.emit('build');
     },
 
@@ -83,24 +81,11 @@ export function createCtx({ game, renderer, toast }) {
       return true;
     },
 
-    /** Open the card for one waiting passenger (a thought), picked on the map. */
-    selectThought(id) {
-      const th = state.thoughts.find((t) => t.id === id);
-      if (!th) return;
-      ctx.sel = { kind: 'thought', title: 'thought ' + id, id };
-      ctx.build = null;
-      if (renderer.setThoughtSelection) renderer.setThoughtSelection(id);
-      ctx.syncRing();
-      bus.emit('selection');
-      bus.emit('build');
-    },
-
-    /** Close everything that is open. */
+    /** Clear the selection and any pricing. */
     deselect() {
       const had = ctx.sel || ctx.build;
       ctx.sel = null;
       ctx.build = null;
-      if (renderer.setThoughtSelection) renderer.setThoughtSelection(null);
       ctx.syncRing();
       if (had) {
         bus.emit('selection');
@@ -108,7 +93,7 @@ export function createCtx({ game, renderer, toast }) {
       }
     },
 
-    /** Escape ladder: the build card first, then the station or passenger card. */
+    /** Escape ladder: pricing first, then the selection. */
     back() {
       if (ctx.closeBuild()) return true;
       if (ctx.sel) {

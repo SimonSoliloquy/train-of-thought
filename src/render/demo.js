@@ -27,6 +27,8 @@ renderer.onPick((pick) => {
     // an upgrade tag: buy that train for the track
     const res = game.upgradeTrack(pick.trackId, pick.typeId);
     say(res.ok ? `upgraded track ${pick.trackId} to ${pick.typeId}` : res.reason);
+  } else if (pick.kind === 'article') {
+    say(`article card: ${pick.title}`);
   } else if (pick.kind === 'station') {
     // a built station: its unbuilt links stand as signposts around it
     selectedStation = pick.title;
@@ -86,7 +88,7 @@ window.addEventListener('keydown', (e) => {
     say(following == null ? 'free camera' : `following train ${following}`);
   } else if (k === 'm') {
     game.state.money += 250;
-    say(`gold: $${game.state.money}`);
+    say(`gold: ${Math.round(game.state.money)}`);
   } else if (k === 'p') {
     previewStyle = previewStyle === 'direct' ? 'cheap' : 'direct';
     showPreview();
@@ -119,6 +121,10 @@ window.addEventListener('keydown', (e) => {
     const st = list[Math.floor(Math.random() * list.length)];
     game._emit('routeBonus', { station: st, count: 3, amount: 120 });
     say(`routeBonus at ${st} (test)`);
+  } else if (k === 't') {
+    const t = game.state.tickets[0] || { from: 'Locomotive', to: 'Steam engine', reward: 650 };
+    game._emit('ticketDone', { ticket: t, reward: t.reward });
+    say('ticketDone (test)');
   } else if (k === 'g') {
     const ghosts = [...world.placements.values()].filter((p) => p.state === 'ghost');
     if (ghosts.length) { const g = ghosts[Math.floor(Math.random() * ghosts.length)]; renderer.setSelection(g.title); renderer.focus(g.title); }
@@ -139,7 +145,7 @@ function frame(now) {
   if (fpsT >= 0.5) {
     const info = renderer._debug.renderer.info;
     const g = game.state.goal;
-    document.getElementById('gold').textContent = `gold $${Math.round(game.state.money)} · streak ${game.state.streak}${g ? ` · goal: ${g.text} (${g.progress}/${g.target})` : ''}`;
+    document.getElementById('gold').textContent = `gold ${Math.round(game.state.money)} · streak ${game.state.streak}${g ? ` · goal: ${g.text} (${g.progress}/${g.target})` : ''}`;
     fpsEl.textContent = `${Math.round(frames / fpsT)} fps · ${renderer._debug.terrain.tileCount} tiles · ${info.render.calls} calls · ${(info.render.triangles / 1000).toFixed(0)}k tris`;
     frames = 0; fpsT = 0;
   }

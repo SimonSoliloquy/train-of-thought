@@ -27,7 +27,12 @@ const UNLINKED_BUILT_HOPS = 2;    // price of a built destination no track reach
 const ok = () => ({ ok: true });
 const fail = (reason) => ({ ok: false, reason });
 
-export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
+// autoTrain: every new track comes with a Local train already running (the game as played).
+// Tests that need a bare track pass autoTrain: false.
+// tickets: the game hands out up to ECON.maxTickets routes to find, and ordinary passengers only
+// ride between stations that exist. Tests of the older passenger rules pass tickets: false.
+export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTrain = true, tickets = true }) {
+  const ticketsOn = tickets && spawnThoughts;
   const rng = mulberry32(seed >>> 0);
   const { on, emit } = createEmitter();
   const toast = (text, tone = 'info') => emit('toast', { text, tone });
@@ -62,6 +67,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
     tracks: [],
     trains: [],
     thoughts: [],
+    tickets: [],
   };
 
   // ------------------------------------------------------------ internals
@@ -150,14 +156,16 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
   }
 
   // ------------------------------------------------------------ goals
+  let ticketsDone = 0;
+
   function metrics() {
     let maxLevel = 0;
     for (const t of state.tracks) if (t.level > maxLevel) maxLevel = t.level;
-    return { stations: state.stations.size, delivered: state.delivered, maxLevel };
+    return { stations: state.stations.size, delivered: state.delivered, maxLevel, tickets: ticketsDone };
   }
 
   function nextGoal() {
-    const made = makeGoal(goalIndex, metrics(), state.inflation);
+    const made = makeGoal(goalIndex, metrics(), state.inflation, autoTrain);
     state.goal = made.goal;
     goalMeasure = made.measure;
     syncGoal();
@@ -193,6 +201,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
 
   function networkChanged() {
     router.invalidate();
+    checkTickets();
   }
 
   /** Builds the Station record; updates unique-link accounting. */
@@ -311,7 +320,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
     const q = quoteBuild(fromTitle, toTitle);
     if (!q.ok) return fail(q.reason);
     const quote = q[style];
-    if (!quote.affordable) return fail(`Not enough money: that costs ${quote.total}.`);
+    if (!quote.affordable) return fail(`Not enough gold: that costs ${quote.total} gold.`);
     const ghost = !state.stations.has(toTitle);
     const key = pairKey(fromTitle, toTitle);
     pendingPairs.add(key);
@@ -331,10 +340,29 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
       }
       if (state.phase !== 'running') return fail('The game is over.');
 
+      // The article took a moment to load, and an unbuilt spot may have moved meanwhile (another
+      // build finishing can pull it towards its other linkers). Lay the track to where the
+      // station really is now, never to where it was when priced: same price, fresh route.
+      let route = quote.route;
+      const end = route.hexes[route.hexes.length - 1];
+      const first = route.hexes[0];
+      const pTo = world.placements.get(toTitle);
+      const pFrom = world.placements.get(fromTitle);
+      if (!pTo || !pFrom || pTo.q !== end.q || pTo.r !== end.r || pFrom.q !== first.q || pFrom.r !== first.r) {
+        try {
+          const fresh = world.findRoutes(fromTitle, toTitle);
+          route = fresh[style] || fresh.cheap;
+        } catch {
+          state.money += quote.total;
+          return fail(`Could not find a way to ${toTitle}. Nothing was charged.`);
+        }
+      }
+
       const revealed = [];
       if (ghost) revealed.push(...(world.setBuilt(toTitle).revealed || []));
-      revealed.push(...(world.commitRoute(quote.route).revealed || []));
-      const track = addTrack(quote.route);
+      revealed.push(...(world.commitRoute(route).revealed || []));
+      const track = addTrack(route);
+      const startTrain = autoTrain;
       let station = null;
       let placements = [];
       let bonus = null;
@@ -351,6 +379,8 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
       if (placements.length) emit('ghostsAdded', { placements });
       emit('trackBuilt', { track });
       if (station) emit('stationBuilt', { station, track });
+      // A new track comes with its train: it starts running at once, at no extra charge.
+      if (startTrain) doUpgrade(track.id, undefined, true);
       if (bonus) emit('routeBonus', bonus);
       checkGoal();
       return ok();
@@ -412,7 +442,10 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
     return { ok: true, options };
   }
 
-  function upgradeTrack(trackId, typeId) {
+  const upgradeTrack = (trackId, typeId) => doUpgrade(trackId, typeId, false);
+
+  /** free: the Local that comes with a newly built track. */
+  function doUpgrade(trackId, typeId, free) {
     const q = quoteUpgrade(trackId);
     if (!q.ok) return fail(q.reason);
     let option;
@@ -423,8 +456,8 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
       option = q.options.find((o) => o.typeId === typeId);
       if (!option) return fail(`This track cannot take a ${TRAIN_TYPES[typeId]?.name || typeId} train now.`);
     }
-    if (!option.affordable) return fail(`Not enough money: that costs ${option.cost}.`);
-    state.money -= option.cost;
+    if (!free && !option.affordable) return fail(`Not enough gold: that costs ${option.cost} gold.`);
+    if (!free) state.money -= option.cost;
     const track = tracksById.get(trackId);
     const old = track.trainId !== null ? trainsById.get(track.trainId) : null;
     const train = {
@@ -596,7 +629,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
     // Throttled so a collapsing network does not bury the player in toasts.
     if (state.time - lastLostToast >= LOST_TOAST_GAP) {
       lastLostToast = state.time;
-      toast(`A thought waiting at ${at} for ${th.to} gave up.`, 'bad');
+      toast(`A passenger at ${at} gave up waiting for ${th.to}.`, 'bad');
     }
   }
 
@@ -718,6 +751,8 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
 
   /** Chooses what a new passenger at `origin` wants, and how far away that counts as. */
   async function pickDestination(origin, r) {
+    // With tickets on, ordinary passengers only ride between stations that exist.
+    if (tickets) return state.stations.size >= 2 ? pickBuilt(origin, r) : null;
     const wantBuilt = state.stations.size >= 2 && r() < ECON.builtDestinationShare;
     if (wantBuilt) return pickBuilt(origin, r) || (await pickUnbuilt(origin, r));
     return (await pickUnbuilt(origin, r)) || (state.stations.size >= 2 ? pickBuilt(origin, r) : null);
@@ -769,6 +804,132 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
     st.waiting.push(th.id);
     emit('thoughtSpawned', { thought: th });
     return th;
+  }
+
+  // ------------------------------------------------------------ tickets
+  let nextTicketId = 1;
+  let ticketsIssued = 0;
+  let pendingTickets = 0;
+  let ticketGap = 2; // seconds until the next ticket may be drawn
+  const ticketBase = new Map(); // ticket id -> full reward when issued
+
+  function removeTicket(t) {
+    const i = state.tickets.indexOf(t);
+    if (i >= 0) state.tickets.splice(i, 1);
+    ticketBase.delete(t.id);
+  }
+
+  /** A ticket is met the moment both ends are stations joined by track. Paid at once. */
+  function checkTickets() {
+    let any = false;
+    for (const t of [...state.tickets]) {
+      if (!state.stations.has(t.from) || !state.stations.has(t.to)) continue;
+      if (!trackDistances(t.from).has(t.to)) continue;
+      removeTicket(t);
+      const reward = t.reward;
+      state.money += reward;
+      ticketsDone++;
+      ticketGap = ECON.ticketGapSeconds;
+      any = true;
+      emit('ticketDone', { ticket: t, reward });
+    }
+    if (any) checkGoal();
+  }
+
+  function addTicket(from, to, fromDescription, toDescription, links) {
+    const base = (ECON.ticketBase + ECON.ticketPerLink * links) * state.inflation;
+    const timeMax = ECON.ticketSecondsBase + ECON.ticketSecondsPerLink * links;
+    const t = { id: nextTicketId++, from, to, fromDescription, toDescription, links, reward: Math.round(base), time: timeMax, timeMax };
+    ticketBase.set(t.id, base);
+    state.tickets.push(t);
+    ticketsIssued++;
+    emit('ticketAdded', { ticket: t });
+    checkTickets();
+    return t;
+  }
+
+  /** One link out from `article` to a page that is not built, not special, and not already ticketed. */
+  async function stepOut(article, visited, taken, r) {
+    const opts = (article.leadLinks || []).filter((t) => !visited.has(t) && !state.stations.has(t) && !taken.has(t));
+    if (!opts.length) return null;
+    const stubs = await stubsFor(opts);
+    const good = opts.filter((t) => stubs.has(t) && !isSpecialKind(stubs.get(t).kind));
+    if (!good.length) return null;
+    const title = good[Math.floor(r() * good.length)];
+    visited.add(title);
+    return { title, stub: stubs.get(title) };
+  }
+
+  /**
+   * Draws one ticket. Its destination is always unbuilt, some links out from the network; its
+   * start is a built station or, sometimes, an unbuilt page one link out. Tickets reach further
+   * as more are issued, so the game becomes about finding the chain of links.
+   */
+  async function drawTicket() {
+    const r = mulberry32(Math.floor(rng() * 4294967296));
+    const k = Math.min(ECON.ticketMaxLinks, 1 + Math.floor((ticketsIssued + 1) / 2));
+    pendingTickets++;
+    try {
+      for (let tries = 0; tries < 6; tries++) {
+        const built = [...state.stations.values()].filter((st) => !isSpecialKind(st.article.kind));
+        if (!built.length) return;
+        const taken = new Set(state.tickets.flatMap((t) => [t.from, t.to]));
+        const anchor = built[Math.floor(r() * built.length)];
+        const bothNew = state.stations.size >= 2 && k >= 2 && r() < 0.3;
+        const visited = new Set([anchor.title]);
+        let from = anchor.title;
+        let fromDescription = anchor.article.description || '';
+        let cur = anchor.article;
+        let links = 0;
+        if (bothNew) {
+          const first = await stepOut(cur, visited, taken, r);
+          if (!first) continue;
+          from = first.title;
+          fromDescription = first.stub.description || '';
+          links = 1;
+          try { cur = await loadArticle(first.title); } catch { continue; }
+        }
+        const steps = bothNew ? k - 1 : k;
+        let last = null;
+        for (let i = 0; i < steps; i++) {
+          const next = await stepOut(cur, visited, taken, r);
+          if (!next) break;
+          last = next;
+          links++;
+          if (i < steps - 1) {
+            try { cur = await loadArticle(next.title); } catch { break; }
+          }
+        }
+        if (!last || last.title === from) continue;
+        if (state.phase !== 'running' || state.tickets.length >= ECON.maxTickets) return;
+        if (state.stations.has(last.title) || (bothNew && state.stations.has(from))) continue;
+        if (state.tickets.some((t) => t.to === last.title || t.from === last.title)) continue;
+        addTicket(from, last.title, fromDescription, last.stub.description || '', links);
+        return;
+      }
+    } catch {
+      // a failed lookup just means no ticket this time
+    } finally {
+      pendingTickets--;
+    }
+  }
+
+  function tickTickets(h) {
+    for (const t of [...state.tickets]) {
+      t.time = Math.max(0, t.time - h);
+      t.reward = Math.round(liveFare(ticketBase.get(t.id), t.time, t.timeMax));
+      if (t.time <= 0) {
+        removeTicket(t);
+        ticketGap = ECON.ticketGapSeconds;
+        emit('ticketExpired', { ticket: t });
+      }
+    }
+    if (!ticketsOn) return;
+    ticketGap = Math.max(0, ticketGap - h);
+    if (ticketGap <= 0 && state.tickets.length + pendingTickets < ECON.maxTickets) {
+      ticketGap = ECON.ticketGapSeconds;
+      drawTicket();
+    }
   }
 
   function tickSpawns(h) {
@@ -832,6 +993,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
     moveTrains(h);
     tickThoughts(h);
     tickSpawns(h);
+    tickTickets(h);
     tickBankruptcy(h);
     checkGoal();
   }
@@ -869,6 +1031,6 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true }) {
     upgradeTrack,
     trackBetween,
     // Not part of the contract: hooks for tests and the balance bot.
-    _debug: { addThought, router, nav },
+    _debug: { addThought, addTicket, router, nav },
   };
 }

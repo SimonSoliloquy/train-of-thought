@@ -41,7 +41,7 @@ function treeGraph(depth = 5, branching = 3) {
 async function setup({ graph = smallGraph(), start = 'Hub', seed = 7, spawnThoughts = false, money = 1e6 } = {}) {
   const wiki = createFakeWiki(graph, { start });
   const world = createFakeWorld();
-  const game = createGame({ wiki, world, seed, spawnThoughts });
+  const game = createGame({ wiki, world, seed, spawnThoughts, autoTrain: false, tickets: false });
   const events = [];
   for (const name of EVENTS) game.on(name, (p) => events.push({ name, p }));
   await game.start();
@@ -393,7 +393,8 @@ test('streak: a passenger giving up resets it to zero; a rider is never a loss',
 // ------------------------------------------------------------ the mix of new passengers
 
 /** Lets passengers pile up for a while, then clears the platforms so the cap never blocks spawning. */
-async function collectSpawns(game, { chunks, chunkSeconds = 30 }) {
+// Chunk length follows the spawn pace, so retuning how often passengers appear does not starve the samples.
+async function collectSpawns(game, { chunks, chunkSeconds = Math.ceil((30 * ECON.spawnIntervalBase) / 9) }) {
   game.setSpeed(4);
   for (let c = 0; c < chunks; c++) {
     for (let i = 0; i < chunkSeconds; i++) {
@@ -569,4 +570,160 @@ test('econ: streak multiplier and inflation helpers', () => {
   assert.equal(streakFareMult(1), 1 + ECON.streakFarePerStep);
   assert.equal(streakFareMult(1000), 1 + ECON.streakFareMax);
   assert.equal(inflationAt(0), 1);
+});
+
+test('a new track comes with a Local train already running, at no extra charge', async () => {
+  const wiki = createFakeWiki(smallGraph(), { start: 'Hub' });
+  const world = createFakeWorld();
+  const game = createGame({ wiki, world, seed: 7, spawnThoughts: false }); // autoTrain is the default
+  const events = [];
+  for (const name of EVENTS) game.on(name, (p) => events.push({ name, p }));
+  await game.start();
+  game.state.money = 5000;
+  assert.equal(game.state.goal.id, 'first-station');
+
+  const q = game.quoteBuild('Hub', 'A');
+  const res = await game.build('Hub', 'A');
+  assert.equal(res.ok, true);
+  const [track] = game.state.tracks;
+  assert.equal(track.level, 1);
+  assert.equal(track.typeId, 'local');
+  assert.equal(game.state.trains.length, 1);
+  assert.equal(game.state.trains[0].trackId, track.id);
+  // charged for the build only (the first-station goal reward comes back at once)
+  const reward = ofType(events, 'goalDone').reduce((s, e) => s + e.reward, 0);
+  assert.equal(game.state.money, 5000 - q.cheap.total + reward);
+  // there is nothing to teach about adding a train, so that goal never appears
+  assert.ok(!ofType(events, 'goalDone').some((e) => e.goal.id === 'first-train'));
+  assert.equal(game.state.goal.id, 'first-ticket');
+  // the track is announced before its train
+  const names = events.map((e) => e.name);
+  assert.ok(names.indexOf('trackBuilt') < names.indexOf('trackUpgraded'));
+  // the next step on offer is the Express, at its price
+  const up = game.quoteUpgrade(track.id);
+  assert.equal(up.ok, true);
+  assert.deepEqual(up.options.map((o) => o.typeId), ['express']);
+  // and the train really runs
+  const t0 = game.state.trains[0].t;
+  for (let i = 0; i < 80; i++) game.update(0.1);
+  assert.ok(game.state.trains[0].t !== t0 || game.state.trains[0].state === 'dwelling');
+});
+
+test('track is laid to where the station is at build time, even if its spot moved while loading', async () => {
+  const wiki = createFakeWiki(smallGraph(), { start: 'Hub' });
+  const world = createFakeWorld();
+  const game = createGame({ wiki, world, seed: 7, spawnThoughts: false });
+  await game.start();
+  game.state.money = 5000;
+  const before = { ...world.placements.get('A') };
+  // Move A's reserved spot while the build is waiting for the article.
+  const realGet = wiki.getArticle.bind(wiki);
+  wiki.getArticle = async (title) => {
+    const a = await realGet(title);
+    if (title === 'A') { const p = world.placements.get('A'); p.q += 2; p.r -= 1; }
+    return a;
+  };
+  const res = await game.build('Hub', 'A');
+  assert.equal(res.ok, true);
+  const p = world.placements.get('A');
+  assert.ok(p.q !== before.q || p.r !== before.r, 'the spot did move');
+  const route = game.state.tracks[0].route;
+  const end = route.hexes[route.hexes.length - 1];
+  assert.deepEqual([end.q, end.r], [p.q, p.r], 'track ends at the station');
+  const st = game.state.stations.get('A');
+  assert.deepEqual([st.q, st.r], [p.q, p.r], 'station recorded where it stands');
+});
+
+test('tickets: never more than three, always to a place not yet built, paid when both ends are joined', async () => {
+  const wiki = createFakeWiki(treeGraph(5, 3), { start: 'N0' });
+  const world = createFakeWorld();
+  const game = createGame({ wiki, world, seed: 11 });
+  const events = [];
+  for (const name of [...EVENTS, 'ticketAdded', 'ticketDone', 'ticketExpired']) game.on(name, (p) => events.push({ name, p }));
+  await game.start();
+  game.state.money = 1e6;
+  assert.equal(game.state.tickets.length, 0);
+
+  // they arrive a few seconds apart and stop at three
+  await runUntil(game, () => game.state.tickets.length >= ECON.maxTickets, 2000);
+  assert.equal(game.state.tickets.length, ECON.maxTickets);
+  for (let i = 0; i < 300; i++) { game.update(0.1); await flush(3); }
+  assert.equal(game.state.tickets.length, ECON.maxTickets, 'no fourth ticket');
+
+  const seenTo = new Set();
+  for (const t of game.state.tickets) {
+    assert.ok(!game.state.stations.has(t.to), 'destination is not built');
+    assert.ok(t.to !== t.from);
+    assert.ok(!seenTo.has(t.to), 'no two tickets to the same place');
+    seenTo.add(t.to);
+    assert.ok(t.links >= 1 && t.links <= ECON.ticketMaxLinks);
+    assert.ok(t.reward > 0 && t.time > 0 && t.time <= t.timeMax);
+  }
+  // the first ticket is one link from the start, so a new player can do it at once
+  const first = ofType(events, 'ticketAdded')[0].ticket;
+  assert.equal(first.from, 'N0');
+  assert.equal(first.links, 1);
+
+  // the reward falls as time passes, never below half
+  const full = first.reward;
+  for (let i = 0; i < 200; i++) game.update(0.1);
+  const now = game.state.tickets.find((t) => t.id === first.id);
+  assert.ok(now.reward < full && now.reward >= Math.floor(full * ECON.fareMinFraction));
+
+  // building the destination joins both ends: paid at once, exactly once, and a new ticket follows
+  const before = game.state.money;
+  const quote = game.quoteBuild('N0', first.to);
+  const res = await game.build('N0', first.to);
+  assert.equal(res.ok, true);
+  const done = ofType(events, 'ticketDone');
+  assert.equal(done.length, 1);
+  assert.equal(done[0].ticket.id, first.id);
+  const goalGold = ofType(events, 'goalDone').reduce((n, e) => n + e.reward, 0);
+  assert.equal(game.state.money, before - quote.cheap.total + done[0].reward + goalGold);
+  assert.ok(!game.state.tickets.some((t) => t.id === first.id));
+  await runUntil(game, () => game.state.tickets.length >= ECON.maxTickets, 2000);
+  assert.equal(game.state.tickets.length, ECON.maxTickets);
+  for (const t of game.state.tickets) assert.ok(!game.state.stations.has(t.to));
+});
+
+test('tickets: a ticket between two places not yet built needs both, and an unmet ticket is withdrawn without penalty', async () => {
+  const wiki = createFakeWiki(treeGraph(5, 3), { start: 'N0' });
+  const world = createFakeWorld();
+  const game = createGame({ wiki, world, seed: 5, spawnThoughts: false }); // no automatic tickets
+  const events = [];
+  for (const name of ['ticketDone', 'ticketExpired']) game.on(name, (p) => events.push({ name, p }));
+  await game.start();
+  game.state.money = 1e6;
+  const t = game._debug.addTicket('N0.0', 'N0.0.1', '', '', 2);
+  await game.build('N0', 'N0.0');
+  assert.equal(events.length, 0, 'one end is not enough');
+  await game.build('N0.0', 'N0.0.1');
+  assert.equal(events.filter((e) => e.name === 'ticketDone').length, 1);
+
+  const rep = game.state.reputation;
+  const streak = game.state.streak;
+  const u = game._debug.addTicket('N0', 'N0.2.2', '', '', 2);
+  for (let i = 0; i < Math.ceil(u.timeMax / 0.1) + 5; i++) game.update(0.1);
+  assert.equal(events.filter((e) => e.name === 'ticketExpired').length, 1);
+  assert.equal(game.state.tickets.length, 0);
+  assert.equal(game.state.reputation, rep);
+  assert.equal(game.state.streak, streak);
+  assert.ok(t.id !== u.id);
+});
+
+test('with tickets on, ordinary passengers only ask for stations that exist', async () => {
+  const wiki = createFakeWiki(treeGraph(4, 3), { start: 'N0' });
+  const world = createFakeWorld();
+  const game = createGame({ wiki, world, seed: 3 });
+  const spawned = [];
+  game.on('thoughtSpawned', (p) => spawned.push(p.thought));
+  await game.start();
+  game.state.money = 1e6;
+  for (let i = 0; i < 200; i++) { game.update(0.1); await flush(3); }
+  assert.equal(spawned.length, 0, 'nobody rides while there is one station');
+  await game.build('N0', 'N0.0');
+  await game.build('N0', 'N0.1');
+  for (let i = 0; i < 1500 && spawned.length < 12; i++) { game.update(0.1); await flush(3); }
+  assert.ok(spawned.length >= 6);
+  for (const th of spawned) assert.ok(['N0', 'N0.0', 'N0.1'].includes(th.to), th.to);
 });

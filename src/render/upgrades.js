@@ -91,6 +91,7 @@ export class UpgradeTags {
     const canQuote = this.game && typeof this.game.quoteUpgrade === 'function';
     for (const tr of tracks) {
       if (!tr || tr.id == null || !tr.route || !Array.isArray(tr.route.points) || tr.route.points.length < 2) continue;
+      if (this.plain) continue; // plain: no upgrade tags at all, only places to build
       let options = [];
       if (canQuote) {
         try { options = quoteOptions(this.game.quoteUpgrade(tr.id)); } catch { options = []; }

@@ -291,7 +291,7 @@ export function signpostInfo(game, from, titles, thoughts) {
 export class StationsView {
   constructor({ parent, materials, world, labels, onBuiltFx, terrain, onSignClick, game, plain = false }) {
     this.game = game || null;
-    this.plain = !!plain; // no station names, no prices: signposts only say "Lay track"
+    this.plain = !!plain; // no station names, no prices: signposts only say "Build station"
     this.signInfo = new Map();  // title -> {price, afford, waiting, fares}: what each signpost says
     this.signInfoT = 0;
     this.signInfoKey = '';
@@ -536,7 +536,7 @@ export class StationsView {
         if (this.labels) {
           const key = `sign:${L.title}`;
           this.labels.upsert(key, {
-            text: this.plain ? 'Lay track' : L.title, kind: 'sign', x: g.x, y: g.y + 0.9, z: g.z, priority: tk ? (tk.kind === 'to' ? 2.2e5 : 1.6e5) : want ? 1.2e5 : 1e5, pinned: true, movable: true,
+            text: this.plain ? 'Build station' : L.title, kind: 'sign', x: g.x, y: g.y + 0.9, z: g.z, priority: tk ? (tk.kind === 'to' ? 2.2e5 : 1.6e5) : want ? 1.2e5 : 1e5, pinned: true, movable: true,
             sub: !this.plain && info && info.price != null ? gold(info.price) : '',
             subDim: !!(info && info.price != null && !info.afford),
             badge: this.plain ? '' : tk ? tk.text : (info && info.waiting > 0) ? `${info.waiting} waiting \u00b7 +${gold(info.fares)}` : '',
@@ -676,7 +676,7 @@ export class StationsView {
           if (!worst || me.chosen || (!worst.chosen && frac < worst.frac)) worst = me;
         }
       }
-      if (worst && this.labels) {
+      if (worst && this.labels && !this.plain) { // plain: passengers wait and ride, but nothing is named
         const key = `t:${title}`;
         const more = !worst.chosen && st.waiting.length > 1 ? ` +${st.waiting.length - 1}` : '';
         this.labels.upsert(key, {

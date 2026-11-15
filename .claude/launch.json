@@ -4,8 +4,20 @@
     {
       "name": "train-of-thought",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 5183
+    },
+    {
+      "name": "train-track-builder",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:builder"
+      ],
+      "port": 5184
     }
   ]
 }

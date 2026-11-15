@@ -664,11 +664,12 @@ test('tickets: never more than three, always to a place not yet built, paid when
   assert.equal(first.from, 'N0');
   assert.equal(first.links, 1);
 
-  // the reward falls as time passes, never below half
+  // nothing ages until the first build: the clock has not started
   const full = first.reward;
-  for (let i = 0; i < 200; i++) game.update(0.1);
-  const now = game.state.tickets.find((t) => t.id === first.id);
-  assert.ok(now.reward < full && now.reward >= Math.floor(full * ECON.fareMinFraction));
+  assert.equal(game.state.clockRunning, false);
+  assert.equal(game.state.time, 0);
+  assert.equal(game.state.tickets.find((t) => t.id === first.id).reward, full);
+  assert.equal(game.state.tickets.find((t) => t.id === first.id).time, first.timeMax);
 
   // building the destination joins both ends: paid at once, exactly once, and a new ticket follows
   const before = game.state.money;
@@ -726,4 +727,34 @@ test('with tickets on, ordinary passengers only ask for stations that exist', as
   for (let i = 0; i < 1500 && spawned.length < 12; i++) { game.update(0.1); await flush(3); }
   assert.ok(spawned.length >= 6);
   for (const th of spawned) assert.ok(['N0', 'N0.0', 'N0.1'].includes(th.to), th.to);
+});
+
+test('the clock starts with the first build: then time passes, paydays come and ticket rewards fall', async () => {
+  const wiki = createFakeWiki(treeGraph(5, 3), { start: 'N0' });
+  const world = createFakeWorld();
+  const game = createGame({ wiki, world, seed: 11 });
+  const paydays = [];
+  game.on('payday', (p) => paydays.push(p));
+  await game.start();
+  await runUntil(game, () => game.state.tickets.length >= ECON.maxTickets, 2000);
+  for (let i = 0; i < 400; i++) game.update(0.1);
+  assert.equal(game.state.time, 0);
+  assert.equal(game.state.money, ECON.startMoney, 'nothing paid or charged while waiting');
+  assert.equal(paydays.length, 0);
+  assert.equal(game.state.inflation, 1);
+
+  // build to a place that is not a ticket destination, so a ticket is still open afterwards
+  const taken = new Set(game.state.tickets.map((t) => t.to));
+  const target = ['N0.0', 'N0.1', 'N0.2'].find((t) => !taken.has(t));
+  assert.ok(target);
+  const res = await game.build('N0', target);
+  assert.equal(res.ok, true);
+  const open = game.state.tickets[0];
+  const before = open.reward;
+  for (let i = 0; i < 300; i++) game.update(0.1);
+  assert.equal(game.state.clockRunning, true);
+  assert.ok(game.state.time > 25);
+  assert.ok(paydays.length >= 2);
+  const now = game.state.tickets.find((t) => t.id === open.id);
+  assert.ok(now && now.reward < before && now.time < now.timeMax);
 });

@@ -104,6 +104,7 @@ export function createRenderer({ container, game, world }) {
   const confettiFx = new Particles(world3d, confettiGeom, confettiMat, { kind: 'sparkle', capacity: 256, renderOrder: 9 });
   let buildOffer = null;      // {title, label, sub, affordable} from the UI: the on-map Build button
   let buildOfferShown = false;
+  let holderKeys = new Set(); // labels of ticket holders currently shown
   const pickHandlers = new Set();
   const emitPick = (pick) => { for (const h of [...pickHandlers]) safe('pick handler', () => h(pick)); };
   const stations = new StationsView({
@@ -504,6 +505,31 @@ export function createRenderer({ container, game, world }) {
     safe('stations', () => stations.update(dt, S()));
     safe('cards', () => cards.update(dt, stations.built, S()));
     safe('upgrades', () => { upgrades.update(dt, S()); tracks.setGlow(upgrades.glowWanted()); });
+    safe('ticket holders', () => {
+      // A magnified circle over the station a ticket starts from: the passenger, ticket in hand,
+      // waiting for a train to somewhere that does not exist yet.
+      const live = new Set();
+      const seen = new Map();
+      const st8 = S();
+      for (const t of (st8 && st8.tickets) || []) {
+        const st = st8.stations.get(t.from);
+        if (!st) continue;
+        const n = seen.get(t.from) || 0;
+        seen.set(t.from, n + 1);
+        const w = hexToWorld(st.q, st.r);
+        const frac = t.timeMax > 0 ? t.time / t.timeMax : 1;
+        const key = `holder:${t.id}`;
+        labels.upsert(key, {
+          text: `\u2192 ${t.to}`,
+          kind: 'holder' + (frac < 0.25 ? ' urgent' : frac < 0.5 ? ' restless' : ''),
+          x: w.x, y: terrain.groundAt(w.x, w.z) + 2.5, z: w.z,
+          priority: 2.5e5 - n, pinned: true, movable: true,
+        });
+        live.add(key);
+      }
+      for (const key of holderKeys) if (!live.has(key)) labels.remove(key);
+      holderKeys = live;
+    });
     safe('build offer', () => {
       // The one Build button lives on the map, over the place the track would go to.
       const pl = buildOffer && world && world.placements ? world.placements.get(buildOffer.title) : null;

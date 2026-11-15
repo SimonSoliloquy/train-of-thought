@@ -9,7 +9,7 @@ const wiki = createWiki();
 const world = createWorld({ seed });
 const game = createGame({ wiki, world, seed });
 const renderer = createRenderer({ container: document.getElementById('view'), game, world });
-const ui = createUI({ root: document.getElementById('ui'), game, renderer });
+const ui = createUI({ root: document.getElementById('ui'), game, renderer, wiki });
 
 // Handy for poking at the game from the browser console.
 window.tot = { wiki, world, game, renderer, ui };

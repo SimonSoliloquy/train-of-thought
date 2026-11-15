@@ -362,6 +362,24 @@ export function createWiki(options = {}) {
     return extractWikitextLinks(text);
   }
 
+  const htmlCache = new Map();
+
+  /** The article as Wikipedia renders it (parser HTML). Callers must sanitise before showing it. */
+  async function getArticleHtml(title) {
+    const key = normTitle(title);
+    if (!key) throw new Error('getArticleHtml: empty title');
+    if (htmlCache.has(key)) return htmlCache.get(key);
+    const body = await client.get({
+      action: 'parse', page: key, prop: 'text', redirects: 1,
+      disableeditsection: 1, disablelimitreport: 1, disabletoc: 1,
+    });
+    const html = body.parse && body.parse.text;
+    const text = typeof html === 'string' ? html : html && typeof html['*'] === 'string' ? html['*'] : null;
+    if (text === null) throw new Error(`No text for "${key}"`);
+    boundedSet(htmlCache, key, text);
+    return text;
+  }
+
   async function fetchAllLinks(key) {
     const titles = [];
     const seen = new Set();
@@ -582,6 +600,7 @@ export function createWiki(options = {}) {
   return {
     randomStart,
     getArticle,
+    getArticleHtml,
     getStubs,
     stats: client.stats,
     clearCache() {

@@ -5,8 +5,7 @@ import { createCtx } from './ctx.js';
 import { createHud } from './hud.js';
 import { createGoal } from './goal.js';
 import { createTickets } from './tickets.js';
-import { createReader } from './reader.js';
-import { createSearch } from './search.js';
+import { createArticle } from './article.js';
 import { createBuildCard } from './buildcard.js';
 import { createToasts, createRideLabel } from './notes.js';
 import { createScreens } from './screens.js';
@@ -16,7 +15,7 @@ const TICK = 0.1; // seconds between live-number refreshes
 const SPEED_KEYS = { 1: 1, 2: 2, 3: 4 };
 
 /** @param {{root: HTMLElement, game: import('../types.js').Game, renderer: import('../types.js').Renderer}} deps */
-export function createUI({ root, game, renderer }) {
+export function createUI({ root, game, renderer, wiki }) {
   const state = game.state;
 
   const toasts = createToasts();
@@ -25,21 +24,20 @@ export function createUI({ root, game, renderer }) {
   const hud = createHud(ctx);
   const goal = createGoal(ctx);
   const tickets = createTickets(ctx);
-  const reader = createReader(ctx);
-  const search = createSearch(ctx);
+  const article = createArticle(ctx, wiki);
   const buildCard = createBuildCard(ctx);
   const rideLabel = createRideLabel(ctx);
   const screens = createScreens(ctx);
   const sound = createSound({ game });
 
   // Layout: gold readout top left with the tickets under it, speed top right, the goal line top
-  // centre (its own row when narrow). The stage holds the notes (riding label, toasts). The link
-  // list is a slim panel down the right edge, only while a station is selected. The article reader is a
-  // centred panel over a dimmed map, and only exists while open. No build button: the 3D view
+  // centre (its own row when narrow). The stage holds the notes (riding label, toasts). The
+  // station's real Wikipedia article is a panel down the right edge, only while a station is
+  // selected; its links are how the player picks where to build. No build button: the 3D view
   // floats it over the place being built towards.
   const notes = h('div', { class: 'tot-notes' }, rideLabel.el, toasts.el);
   const stage = h('div', { class: 'tot-stage' }, notes);
-  const app = h('div', { class: 'tot tot-root' }, hud.el, hud.speed, goal.el, tickets.el, stage, search.el, reader.el, screens.el);
+  const app = h('div', { class: 'tot tot-root' }, hud.el, hud.speed, goal.el, tickets.el, stage, article.el, screens.el);
   app.dataset.phase = state.phase === 'gameOver' ? 'over' : state.phase;
   root.append(app);
 
@@ -83,14 +81,13 @@ export function createUI({ root, game, renderer }) {
   on('gameOver', (e) => {
     ctx.stopRide();
     ctx.deselect();
-    reader.close();
     screens.onGameOver(e);
   });
 
   function flush() {
     if (dirty.tickets) { dirty.tickets = false; tickets.sync(); }
     if (dirty.builder) { dirty.builder = false; buildCard.refresh(); }
-    if (dirty.search) { dirty.search = false; search.refresh(); }
+    if (dirty.search) { dirty.search = false; article.refresh(); }
     if (dirty.hud) { dirty.hud = false; hud.update(); }
     if (dirty.goal) { dirty.goal = false; goal.update(); }
   }
@@ -110,7 +107,8 @@ export function createUI({ root, game, renderer }) {
         buildCard.build(pick.title);
         break;
       case 'article':
-        reader.open(pick.title);
+        // The picture over a station: the same as clicking the station, which shows its article.
+        ctx.select(pick.title);
         break;
       case 'thought':
         break; // ordinary passengers are no longer listed or opened anywhere
@@ -138,7 +136,6 @@ export function createUI({ root, game, renderer }) {
     const t = e.target;
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
     if (e.key === 'Escape') {
-      if (reader.close()) { e.preventDefault(); return; }
       if (typing) return; // the search box handles its own Escape
       if (ctx.back()) e.preventDefault();
       else if (ctx.riding != null) { ctx.stopRide(); e.preventDefault(); }

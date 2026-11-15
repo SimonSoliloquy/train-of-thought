@@ -64,7 +64,8 @@ export function createHud(ctx) {
       setClass(fill, 'danger', true);
     } else {
       const v = paydayView(state.payday);
-      setText(next, v.text);
+      // Nothing is paid or charged until the first track is built.
+      setText(next, state.clockRunning === false ? 'Clock starts when you build' : v.text);
       setClass(next, 'neg', v.negative);
       setWidth(fill, v.fraction);
       setClass(fill, 'danger', false);

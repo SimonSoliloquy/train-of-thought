@@ -33,6 +33,7 @@ const fail = (reason) => ({ ok: false, reason });
 // ride between stations that exist. Tests of the older passenger rules pass tickets: false.
 export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTrain = true, tickets = true }) {
   const ticketsOn = tickets && spawnThoughts;
+  const clockWaits = tickets; // the clock starts with the first build (the game as played)
   const rng = mulberry32(seed >>> 0);
   const { on, emit } = createEmitter();
   const toast = (text, tone = 'info') => emit('toast', { text, tone });
@@ -68,6 +69,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     trains: [],
     thoughts: [],
     tickets: [],
+    clockRunning: !tickets,
   };
 
   // ------------------------------------------------------------ internals
@@ -914,8 +916,8 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     }
   }
 
-  function tickTickets(h) {
-    for (const t of [...state.tickets]) {
+  function tickTickets(h, frozen = false) {
+    for (const t of frozen ? [] : [...state.tickets]) {
       t.time = Math.max(0, t.time - h);
       t.reward = Math.round(liveFare(ticketBase.get(t.id), t.time, t.timeMax));
       if (t.time <= 0) {
@@ -987,6 +989,15 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
 
   // ------------------------------------------------------------ loop
   function step(h) {
+    // Nothing costs or ages until the player has built something: the clock (time, inflation,
+    // paydays, ticket timers, passengers) starts with the first track. Tickets still arrive,
+    // so there is something to aim for.
+    if (clockWaits && state.tracks.length === 0) {
+      state.clockRunning = false;
+      tickTickets(h, true);
+      return;
+    }
+    state.clockRunning = true;
     state.time += h;
     state.inflation = inflationAt(state.time);
     tickMoney(h);

@@ -80,6 +80,17 @@ const CSS = `
   box-shadow: 0 2px 6px rgba(0,0,0,.28); backdrop-filter: none; -webkit-backdrop-filter: none; }
 .tot-label.thought .tot-dot { display: none; }
 .tot-label.thought.restless .tot-pill { background: rgba(255, 228, 150, .96); }
+/* a ticket holder: a magnified circle over the station the ticket starts from */
+.tot-label.holder .tot-pill { flex-direction: column; gap: 3px; padding: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.tot-label.holder .tot-dot { width: 62px; height: 62px; border-radius: 50%; flex: none;
+  background: #bfe3f5 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23bfe3f5'/%3E%3Crect y='47' width='64' height='17' fill='%23cfc6b4'/%3E%3Crect y='47' width='64' height='3' fill='%23f1d36a'/%3E%3Cpath d='M15 60 L18 36 Q28 28 38 36 L41 60 Z' fill='%23d1495b'/%3E%3Ccircle cx='28' cy='21' r='9.5' fill='%23e0ac7e'/%3E%3Cpath d='M19 18 Q28 7 37 18 Q28 14 19 18 Z' fill='%233a2a20'/%3E%3Ccircle cx='25' cy='21' r='1.2' fill='%232a2100'/%3E%3Ccircle cx='31' cy='21' r='1.2' fill='%232a2100'/%3E%3Cpath d='M37 38 L49 29' stroke='%23d1495b' stroke-width='6' stroke-linecap='round'/%3E%3Cg transform='rotate(-14 51 20)'%3E%3Crect x='43' y='13' width='17' height='11' rx='1.5' fill='%23ffd24a' stroke='%232a2100' stroke-width='1.3'/%3E%3Cpath d='M46 17 h10 M46 20.5 h6' stroke='%232a2100' stroke-width='1.2'/%3E%3C/g%3E%3C/svg%3E") center / cover no-repeat;
+  box-shadow: 0 0 0 3px #fffdf6, 0 0 0 6px #ffd24a, 0 6px 16px rgba(0,0,0,.4); animation: tot-holder-bob 2.4s ease-in-out infinite; }
+.tot-label.holder .tot-text { font-size: 11.5px; font-weight: 700; color: #2a2100; background: #ffd24a; padding: 2px 8px; border-radius: 9px;
+  box-shadow: 0 2px 6px rgba(0,0,0,.3); max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.tot-label.holder .tot-count { display: none; }
+.tot-label.holder.restless .tot-dot { box-shadow: 0 0 0 3px #fffdf6, 0 0 0 6px #ff9f43, 0 6px 16px rgba(0,0,0,.4); animation-duration: 1.2s; }
+.tot-label.holder.urgent .tot-dot { box-shadow: 0 0 0 3px #fffdf6, 0 0 0 6px #ff5a4e, 0 6px 16px rgba(0,0,0,.4); animation-duration: .55s; }
+@keyframes tot-holder-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
 .tot-label.thought.urgent .tot-pill { background: rgba(255, 120, 105, .97); color: #2a0b08; }
 .tot-label.hover .tot-pill { background: rgba(28, 34, 46, .9); box-shadow: 0 0 0 2px #ffe08a, 0 4px 14px rgba(0,0,0,.3); }
 .tot-label.selected .tot-pill { background: rgba(28, 34, 46, .95); box-shadow: 0 0 0 2px #ffd966, 0 4px 16px rgba(0,0,0,.35); }

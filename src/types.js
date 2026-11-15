@@ -47,6 +47,8 @@
  *   A good starting article: kind 'article', >= WIKI.startMinLeadLinks lead links,
  *   >= WIKI.startMinLinks links, and reasonably well known (best of a random sample).
  * @property {(title: string) => Promise<Article>} getArticle   Rejects if the page does not exist.
+ * @property {(title: string) => Promise<string>} getArticleHtml   The article's HTML as Wikipedia renders it.
+ *   Untrusted markup: the UI sanitises it (src/ui/sanitize.js) before putting it on the page.
  * @property {(titles: string[]) => Promise<Map<string, ArticleStub>>} getStubs
  *   Batched. Keyed by the title as requested; stub.title is the canonical title. Missing pages are omitted.
  */
@@ -246,6 +248,8 @@
  * @typedef {Object} GameState
  * @property {'idle'|'loading'|'running'|'over'} phase
  * @property {number} time          game seconds elapsed
+ * @property {boolean} clockRunning  false until the player builds their first track: until then no time passes,
+ *                                  nothing is paid or charged, and ticket timers do not run (tickets still arrive)
  * @property {number} speed         0 (paused), 1, 2 or 4
  * @property {number} money
  * @property {number} score

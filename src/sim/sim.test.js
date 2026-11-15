@@ -565,6 +565,9 @@ test('bankruptcy: paydays drive money negative, countdown, recovery, game over',
   assert.equal(game.state.phase, 'over');
   const over = events.find((e) => e.name === 'gameOver');
   assert.equal(over.p.stations, 2);
+  // the longest train line is named by its two end stations
+  const ends = [game.state.tracks[0].from, game.state.tracks[0].to];
+  assert.deepEqual([over.p.lineFrom, over.p.lineTo].sort(), ends.sort());
   const t = game.state.time;
   game.update(0.1);
   assert.equal(game.state.time, t);

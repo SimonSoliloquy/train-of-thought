@@ -209,3 +209,8 @@ test('the tour: short plain steps that each point at a part of the screen', asyn
     assert.ok(!/[$]|thought|hex|ghost/i.test(st.title + st.text), st.title + ' uses a word the player should not see');
   }
 });
+
+test('fmtOrdinal: places on a board', () => {
+  assert.deepEqual([1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 101, 111, 1002].map(f.fmtOrdinal),
+    ['1st', '2nd', '3rd', '4th', '11th', '12th', '13th', '21st', '22nd', '23rd', '101st', '111th', '1,002nd']);
+});

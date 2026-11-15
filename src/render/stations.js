@@ -289,8 +289,9 @@ export function signpostInfo(game, from, titles, thoughts) {
 }
 
 export class StationsView {
-  constructor({ parent, materials, world, labels, onBuiltFx, terrain, onSignClick, game }) {
+  constructor({ parent, materials, world, labels, onBuiltFx, terrain, onSignClick, game, plain = false }) {
     this.game = game || null;
+    this.plain = !!plain; // no station names, no prices: signposts only say "Lay track"
     this.signInfo = new Map();  // title -> {price, afford, waiting, fares}: what each signpost says
     this.signInfoT = 0;
     this.signInfoKey = '';
@@ -535,10 +536,10 @@ export class StationsView {
         if (this.labels) {
           const key = `sign:${L.title}`;
           this.labels.upsert(key, {
-            text: L.title, kind: 'sign', x: g.x, y: g.y + 0.9, z: g.z, priority: tk ? (tk.kind === 'to' ? 2.2e5 : 1.6e5) : want ? 1.2e5 : 1e5, pinned: true, movable: true,
-            sub: info && info.price != null ? gold(info.price) : '',
+            text: this.plain ? 'Lay track' : L.title, kind: 'sign', x: g.x, y: g.y + 0.9, z: g.z, priority: tk ? (tk.kind === 'to' ? 2.2e5 : 1.6e5) : want ? 1.2e5 : 1e5, pinned: true, movable: true,
+            sub: !this.plain && info && info.price != null ? gold(info.price) : '',
             subDim: !!(info && info.price != null && !info.afford),
-            badge: tk ? tk.text : (info && info.waiting > 0) ? `${info.waiting} waiting \u00b7 +${gold(info.fares)}` : '',
+            badge: this.plain ? '' : tk ? tk.text : (info && info.waiting > 0) ? `${info.waiting} waiting \u00b7 +${gold(info.fares)}` : '',
             want, tone: tk ? `tkt-${tk.kind}` : '',
             onClick: () => { if (this.onSignClick) this.onSignClick(L.title); },
             onHover: (on) => { this.hover = on ? L.title : (this.hover === L.title ? null : this.hover); },
@@ -698,7 +699,7 @@ export class StationsView {
   }
 
   _labels(state) {
-    if (!this.labels) return;
+    if (!this.labels || this.plain) return; // plain: stations have no names
     const stations = (state && state.stations) || new Map();
     for (const s of this.built.values()) {
       const st = stations.get(s.title);

@@ -294,3 +294,11 @@ export function ticketView(t, isBuilt) {
     tone: ticketTone(frac),
   };
 }
+
+/** "1st", "2nd", "3rd", "4th", "11th", "22nd": a place on a board. */
+export function fmtOrdinal(n) {
+  const v = Math.max(0, Math.round(Number.isFinite(n) ? n : 0));
+  const t = v % 100;
+  const suf = t >= 11 && t <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][v % 10] || 'th';
+  return fmtInt(v) + suf;
+}

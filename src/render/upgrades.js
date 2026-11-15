@@ -41,10 +41,14 @@ export function quoteOptions(quote) {
 
 
 /** What each chip of a tag says, as an instruction. level: the track's level (0 = bare). Pure. */
-export function tagChoices(level, options) {
+export function tagChoices(level, options, plain = false) {
   const one = options.length === 1;
   return options.map((o) => {
     let title, sub;
+    if (plain) {
+      // no prices: just what the click does
+      return { ...o, title: one ? `Upgrade \u00b7 ${o.name}` : o.name, sub: o.blurb };
+    }
     if (one && (level === 0 || (level == null && o.typeId === 'local'))) {
       title = `Add train \u00b7 ${gold(o.cost)}`;
       sub = o.blurb ? `${o.name} \u00b7 ${o.blurb}` : o.name;
@@ -63,7 +67,8 @@ export function tagChoices(level, options) {
 export const FIRST_TRAIN_GOAL = 'first-train';
 
 export class UpgradeTags {
-  constructor({ game, labels, groundAt, onClick, network }) {
+  constructor({ game, labels, groundAt, onClick, network, plain = false }) {
+    this.plain = !!plain;
     this.network = network || null; // lanes.js Network of built tracks (tracks-view.js owns it)
     this.game = game;
     this.labels = labels;
@@ -101,7 +106,7 @@ export class UpgradeTags {
         this.tags.set(tr.id, tag);
       }
       tag.level = Number.isFinite(tr.level) ? tr.level : null;
-      tag.options = tagChoices(tag.level, options);
+      tag.options = tagChoices(tag.level, options, this.plain);
       tag.afford = options.some((o) => o.affordable);
     }
     // the first-train goal points at one bare track: the first affordable one, else the first

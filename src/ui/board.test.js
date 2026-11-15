@@ -83,3 +83,14 @@ test('a store that refuses writes still returns the board', () => {
   assert.equal(res.rank, 1);
   assert.equal(res.runs.length, 1);
 });
+
+test('a run keeps its longest line; older runs without one read as null', () => {
+  const s = fakeStorage();
+  saveRun(s, run(80, { lineFrom: 'Engine', lineTo: 'Boiler' }), 1);
+  saveRun(s, run(40), 2);
+  const runs = loadRuns(s);
+  assert.deepEqual([runs[0].lineFrom, runs[0].lineTo], ['Engine', 'Boiler']);
+  assert.deepEqual([runs[1].lineFrom, runs[1].lineTo], [null, null]);
+  const old = fakeStorage({ [BOARD_KEY]: JSON.stringify([{ score: 5, time: 1, stations: 1, tickets: 0, delivered: 0, start: 'X', at: 1 }]) });
+  assert.equal(loadRuns(old)[0].lineFrom, null);
+});

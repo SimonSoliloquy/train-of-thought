@@ -11,6 +11,7 @@ import {
   stationBaseCost, incomePerMinFor, scoreFor, isSpecialKind, streakFareMult, routeBonusFor,
 } from './econ.js';
 import { makeGoal } from './goals.js';
+import { longestLine } from './line.js';
 
 const STEP = 0.1;            // max game seconds per substep
 const MAX_REAL_DT = 0.25;    // real seconds per update() beyond which time is dropped
@@ -1110,6 +1111,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
   function gameOver() {
     state.phase = 'over';
     refreshDerived();
+    const line = longestLine(state.tracks);
     emit('gameOver', {
       score: state.score,
       time: state.time,
@@ -1117,6 +1119,8 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
       stations: state.stations.size,
       tickets: ticketsDone,
       start: startTitle,
+      lineFrom: line ? line.from : null,
+      lineTo: line ? line.to : null,
     });
   }
 

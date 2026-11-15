@@ -518,7 +518,19 @@
 }
 .tot-over-stat b { font: 700 21px var(--mono); color: #fff0c8; }
 .tot-overlay { overflow-y: auto; align-items: safe center; }
-.tot-start.tot-over { width: min(520px, 100%); padding: 20px 18px 22px; gap: 12px; }
+.tot-start.tot-over { width: min(580px, 100%); padding: 20px 18px 22px; gap: 12px; }
+.tot-over-line { max-width: 100%; font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tot-over-line .tot-k { margin-right: 4px; }
+.tot-over-line b { font: 700 15px var(--serif); color: #fff0c8; }
+/* the one optional field: a name for the shared boards */
+.tot-name { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; }
+.tot .tot-name-input {
+  width: min(220px, 60%); padding: 5px 9px; border: 0; border-radius: 4px; color: var(--ink); background: #f8efd6;
+  font: 600 14px var(--serif); box-shadow: inset 0 0 0 1px rgba(120, 90, 40, 0.7), inset 0 2px 3px rgba(0, 0, 0, 0.25);
+}
+.tot .tot-name-input::placeholder { color: #8a7650; }
+.tot .tot-name-input:disabled { opacity: 0.75; }
+.tot-boards { display: flex; flex-direction: column; gap: 10px; width: 100%; }
 /* best runs on this machine: a printed timetable on parchment */
 .tot-board {
   width: 100%; padding: 8px 10px 9px; border-radius: 4px; color: var(--ink);
@@ -537,11 +549,16 @@
 .tot-board td { padding: 2px 3px; text-align: right; border-bottom: 1px dotted rgba(90, 64, 30, 0.3); white-space: nowrap; }
 .tot-board td.num { font: 600 12.5px var(--mono); }
 .tot-board th:first-child, .tot-board td:first-child { width: 24px; text-align: left; }
-.tot-board th:nth-child(2) { width: 17%; }
-.tot-board th:nth-child(3), .tot-board th:nth-child(4) { width: 16%; }
-.tot-board th:nth-child(5) { width: 13%; }
+.tot-board th:nth-child(2) { width: 14%; }
+.tot-board th:nth-child(3), .tot-board th:nth-child(4) { width: 13%; }
+.tot-board th:nth-child(5) { width: 10%; }
 .tot-board th:last-child, .tot-board td.start { text-align: left; padding-left: 9px; }
-.tot-board td.start { overflow: hidden; text-overflow: ellipsis; font-family: var(--serif); }
+.tot-board td.start { overflow: hidden; font-family: var(--serif); }
+.tot-board td.start > span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.tot-board .tot-board-name { font-weight: 700; }
+.tot-board .tot-board-line { font-size: 11.5px; color: var(--ink-dim); }
+.tot-board tr.mine .tot-board-line { color: var(--ink); }
+.tot-board-ranks { text-align: center; color: var(--dim); }
 .tot-board tr.mine td { background: #ffdf8a; font-weight: 800; }
 .tot-board .tot-note { margin-top: 5px; color: var(--ink-dim); }
 .tot-over-credit { margin-top: 4px; font-size: 13px; color: var(--dim); }

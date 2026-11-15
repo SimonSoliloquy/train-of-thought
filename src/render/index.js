@@ -29,7 +29,9 @@ export function deliveryFloat(streak) {
  * @param {{container: HTMLElement, game: import('../types.js').Game, world: import('../types.js').World}} opts
  * @returns {import('../types.js').Renderer}
  */
-export function createRenderer({ container, game, world }) {
+// plain: show the map and the trains only: no station names, no prices, no gold anywhere
+// (the Train Track Builder page).
+export function createRenderer({ container, game, world, plain = false }) {
   const warned = new Set();
   const safe = (tag, fn) => {
     try { return fn(); } catch (err) {
@@ -95,6 +97,7 @@ export function createRenderer({ container, game, world }) {
 
   // ------------------------------------------------------------ subsystems
   const labels = new LabelLayer(container);
+  if (plain) labels.floatText = () => {}; // sparkles still fly; nothing is written over the map
   const terrain = new Terrain({ parent: world3d, materials, world });
   const smoke = new Particles(world3d, new THREE.IcosahedronGeometry(1, 0), materials.smoke, { kind: 'smoke', capacity: 256, renderOrder: 8 });
   const sparkles = new Particles(world3d, new THREE.OctahedronGeometry(1, 0), materials.sparkle, { kind: 'sparkle', capacity: 256, renderOrder: 9 });
@@ -108,7 +111,7 @@ export function createRenderer({ container, game, world }) {
   const pickHandlers = new Set();
   const emitPick = (pick) => { for (const h of [...pickHandlers]) safe('pick handler', () => h(pick)); };
   const stations = new StationsView({
-    parent: world3d, materials, world, labels, terrain, game,
+    parent: world3d, materials, world, labels, terrain, game, plain,
     onSignClick: (title) => emitPick({ kind: 'ghost', title }),
     onBuiltFx: (x, y, z) => {
       sparkles.burst(x, y + 0.3, z, 26, '#fff0b8', { speed: 1.0, up: 1.6 });
@@ -145,7 +148,7 @@ export function createRenderer({ container, game, world }) {
   });
   const cards = new ArticleCards({ parent: world3d });
   const upgrades = new UpgradeTags({
-    game, labels,
+    game, labels, plain,
     groundAt: (x, z) => terrain.groundAt(x, z),
     network: tracks.network,
     onClick: (trackId, typeId) => emitPick({ kind: 'upgrade', trackId, typeId }),

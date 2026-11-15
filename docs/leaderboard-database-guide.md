@@ -1,6 +1,7 @@
 # Guide: adding a database-backed leaderboard to Train of Thought
 
-For the agent adding shared leaderboard storage. Written 2026-11-15, against commit `0c6829f`.
+For the agent adding shared leaderboard storage. Written 2026-11-15, against commit `0c6829f`;
+updated the same day to describe what was built (Cloudflare Worker, names, daily boards, longest line).
 
 ## What you are building
 
@@ -19,100 +20,90 @@ Quoted from Simon. Do not reopen them.
 - "no company levels- a finished run leaves nothing behind." Only scores are stored. No accounts,
   progress, unlocks or saved games.
 - "It needs to be as few buttons as possible. The more buttons we have, the worse of a job you've
-  done on the user interface." Submitting a run must not add a button. See "Ask Simon" below about names.
+  done on the user interface." Submitting a run must not add a button.
 - Money is "gold", never "$".
 - Commit, push and deploy only when Simon says so.
 
-## Ask Simon before building
+## What Simon decided (2026-11-15), and what was built
 
-1. **Which store.** Realistic free choices: a new table in one of his existing Supabase projects (no
-   new project, so the project limit does not apply), or a free-tier store added through the Vercel
-   dashboard (a Postgres or key-value store). Confirm the price is zero at the time you set it up.
-2. **Do runs carry a player name?** A name means a text field somewhere, a length limit and a
-   word filter. Without one the board can only show the starting article and the date. This is his call.
-3. **One board, or also daily / weekly boards?** The schema below supports either.
+The questions this guide first asked Simon are answered:
+
+1. **Store:** not a Vercel function and not Supabase. A shared Cloudflare Worker + D1 (free tier),
+   deployed by another agent and shared with other games: `https://leaderboards.ai-wizards.workers.dev`.
+   It is public, so there are no keys anywhere. This game only ever calls its `/train-of-thought/`
+   routes, never another game's (e.g. Linkshot). There are no `/api` handlers in this repo.
+2. **Names:** optional. One small text field on the game-over screen, no button. Blank = "Anonymous".
+   Max 20 characters, remembered in `localStorage` (`tot.name`). The server filters names too.
+3. **Boards:** today (UTC, decided by the server) and all time.
+4. **Longest train line:** every run names its longest line, "A → B", shown on every board row. It does
+   not change the score.
 
 ## Where things are now
 
 | What | Where |
 |---|---|
-| Stack | Vite + three.js, plain JS ES modules, no framework, no backend. `npm run dev` (port 5183), `npm test` (177 passing), `npm run build` |
+| Stack | Vite + three.js, plain JS ES modules, no framework, no backend in this repo. `npm run dev` (port 5183), `npm test` (197 passing), `npm run build` |
 | Hosting | Vercel project `train-of-thought`, live at https://wiki-train-of-thought.vercel.app. Repo: private, `SimonSoliloquy/train-of-thought`, branch `main`. A push to `main` deploys |
-| Local board | `src/ui/board.js`: `loadRuns(storage)`, `saveRun(storage, run)` returns `{runs, rank, best}`, `cleanRun`, `sortRuns`. Key `tot.runs`, top 10. Tests in `src/ui/board.test.js` |
-| Game-over screen | `src/ui/screens.js`: `onGameOver(payload)` calls `saveRun` once, `boardView()` draws the table |
+| Local board | `src/ui/board.js`: `loadRuns`, `saveRun(storage, run)` returns `{runs, rank, best}`, `cleanRun` (now keeps `lineFrom`/`lineTo`), `sortRuns`. Key `tot.runs`, top 10. Tests in `src/ui/board.test.js` |
+| Shared board client | `src/ui/remote-board.js`: `LEADERBOARD_URL`, `submitRun(run, opts)`, `fetchTop(scope, opts)`, `sharedBoardOn`, `isLocalHost`, `cleanName`/`loadName`/`saveName`, `playerId`. Tests (fake `fetch`) in `src/ui/remote-board.test.js` |
+| Longest line | `src/sim/line.js`: `longestLine(tracks)`. Tests in `src/sim/line.test.js` |
+| Game-over screen | `src/ui/screens.js`: `onGameOver(payload)` calls `saveRun` once and draws at once, then reads the shared boards and sends the run in the background |
 | Event wiring | `src/ui/index.js` passes the sim's `gameOver` event to `screens.onGameOver` |
-| Contract | `src/types.js` documents every event and type. Update it if you change a shape |
-| Board styles | `src/ui/styles.css`, classes `tot-board`, `tot-board-head`, `tot-board-best`, row class `mine`. Every button rule must start with `.tot` or it loses to `.tot button` |
+| Contract | `src/types.js` documents every event and type, including the BOARDS section. Update it if you change a shape |
+| Board styles | `src/ui/styles.css`: `tot-boards`, `tot-board`, `tot-board-head`, `tot-board-best`, `tot-board-name`, `tot-board-line`, `tot-board-ranks`, `tot-name`, `tot-name-input`, `tot-over-line`; row class `mine`. Every button rule must start with `.tot` or it loses to `.tot button` |
 
 The `gameOver` payload, emitted once per run from `src/sim/index.js`:
 
 ```js
-{ score, time, delivered, stations, tickets, start }
+{ score, time, delivered, stations, tickets, start, lineFrom, lineTo }
 // score: whole number; time: game seconds; delivered: passengers carried;
-// stations: stations built; tickets: tickets met; start: title of the starting article
+// stations: stations built; tickets: tickets met; start: title of the starting article;
+// lineFrom / lineTo: the two station titles at the ends of the run's longest train line,
+// or both null with fewer than two connected stations
 ```
 
 Score is computed in `src/sim/econ.js` (`scoreFor`) from `ECON.score` in `src/config.js`:
 `delivered * 10 + stations * 25 + uniqueLinks * 0.1 + tickets * 60`. `uniqueLinks` is not in the payload.
 
-## Recommended shape
+### Longest train line
 
-Keep the browser away from the database. The game is a public static site, so anything in the
-bundle is public.
+Of every pair of stations joined by built track, the pair whose *shortest* way along the track is
+longest, measured in track length (the sum of `route.length` of the tracks on the way; the polyline
+the trains ride). Dijkstra from every station over `state.tracks` (station title nodes, one edge per
+track). Several separate networks: the longest of any. Ties keep the pair found first (stations in
+the order they first appear on a track). It is computed once, at game over.
 
-```
-browser  --POST /api/runs-->  Vercel function  --server-side key-->  database
-browser  <--GET /api/runs---  Vercel function  <-------------------  database
-```
+### The Worker's API (as called)
 
-1. **Server:** two handlers under `/api` at the repo root (Vercel serves them beside the Vite build).
-   `POST /api/runs` validates and inserts one run, and returns the run's rank. `GET /api/runs`
-   returns the top N. Credentials live in Vercel environment variables, never in `src/`, and never
-   with a `VITE_` prefix (that prefix puts a value in the public bundle). `.env*` is already git-ignored.
-2. **Client:** a new module, for example `src/ui/remote-board.js`, with `submitRun(run)` and
-   `fetchTop()`. Both must time out after a few seconds and resolve to `null` on any failure.
-3. **Screen:** in `screens.js`, keep the `saveRun` call exactly as it is, so the local board appears
-   at once. Then submit in the background and, when the answer arrives, redraw with a second table
-   ("Best runs anywhere" or similar) above or in place of the local one. The game-over screen must
-   never wait on the network or show an error box if the board is down.
-4. **Dev:** `vite` does not serve `/api`. Either run `vercel dev`, or make the client treat a 404 as
-   "no shared board" so `npm run dev` keeps working unchanged. The second is required either way.
+- `POST {url}/train-of-thought/submit`, JSON
+  `{player, name, score, time, stations, tickets, delivered, start, lineFrom, lineTo}` →
+  `{rankAllTime, rankDaily, totalPlayers}`. `player` is a random id kept in `localStorage`
+  (`tot.player`); `name` is `''` when blank; `time` is sent as whole seconds.
+- `GET {url}/train-of-thought/top?scope=daily|alltime&n=10` →
+  `[{name, score, stations, tickets, delivered, time, start, lineFrom, lineTo, at}]`. `name` is null
+  for unnamed or filtered runs; the client shows "Anonymous".
+- Both time out after 5 s and resolve to `null` on any failure (non-2xx, bad JSON, wrong shape,
+  thrown fetch). While `LEADERBOARD_URL` contains `WORKER_SUBDOMAIN` the client makes no call at all.
+- Server rules (from the Worker's author): 400 if `score` is outside `[base, base + 150 × stations]`
+  with `base = delivered×10 + stations×25 + tickets×60`, or if `stations > 20 + time/2`,
+  `delivered > 20 + time/2`, `tickets > 5 + time/10`; `start` 1–120 characters; 429 on more than 10
+  submits a minute; 403 from origins it does not allow (localhost and 127.0.0.1 are allowed for GET).
 
-### Table
+### The game-over screen
 
-```sql
-create table runs (
-  id          bigint generated always as identity primary key,
-  score       integer     not null check (score between 0 and 10000000),
-  time_s      integer     not null check (time_s between 0 and 864000),
-  stations    integer     not null check (stations between 1 and 5000),
-  tickets     integer     not null check (tickets between 0 and 5000),
-  delivered   integer     not null check (delivered between 0 and 1000000),
-  start_title text        not null check (char_length(start_title) between 1 and 120),
-  player      text        check (char_length(player) <= 24),  -- only if Simon wants names
-  created_at  timestamptz not null default now()
-);
-create index runs_by_score on runs (score desc, created_at asc);
-```
-
-If the store is Supabase: turn on row level security with no public policies and write only through
-the server function's key, or allow public `select` only. Never ship a key that can insert or delete.
-
-### Validation in `POST /api/runs`
-
-The score is worked out in the player's browser, so it can be faked. It cannot be proven, only
-bounded. Reject a run unless:
-
-- every field is a whole number in the ranges above, and `start_title` is a plain string;
-- `score >= delivered*10 + stations*25 + tickets*60` and
-  `score <= delivered*10 + stations*25 + tickets*60 + stations*150` (a page counts at most 1,500 links);
-- `time_s` is plausible for the size: a run cannot have 50 stations after 30 seconds. The clock
-  starts on the first build, and gold limits building, so pick a generous floor and note it in code;
-- the caller has not posted more than a few runs a minute (limit by IP in the function or the store).
-
-Cap the request body at a few hundred bytes. If you take names, trim them, cap the length and
-filter them on the server. Drawing is already safe: the screen builds rows with `h(..., { text })`,
-which sets text, never HTML. Keep it that way.
+1. `saveRun` runs exactly as before and the local board ("Best runs on this machine") is drawn at once.
+2. Both shared boards are fetched in the background. When either has a run, "Best runs today" and
+   "Best runs of all time" take the local board's place; if both fail (or are empty) the local board stays.
+   No error is ever shown for the network.
+3. The run is sent **once**, when the player presses Enter in the name field or leaves it, presses
+   "New run" (sent with `keepalive`), closes the page (`pagehide`), or 30 s after game over if the field
+   is untouched (not while it has focus). The field then locks for this run; the name is remembered for
+   the next. After the answer, both boards are read again, this run's row is picked out by its rank, and
+   a line under them says e.g. "This run: 4th today · 37th of all time · 120 players."
+4. Never sent from `localhost`, `127.x`, `[::1]` or `*.localhost` (`isLocalHost`), so testing never
+   pollutes the board. Reading the boards does work from a local dev tab.
+5. Rows: `#, Score, Stations, Tickets, Time`, then a two-line cell: the player's name (shared) or the
+   start article (local), and "A → B" (or a dash). The full text is in the cell's tooltip.
 
 ## Rules of the house
 
@@ -120,20 +111,24 @@ which sets text, never HTML. Keep it that way.
   addresses in the table, no analytics, no third-party scripts.
 - **Wikipedia.** The game calls the Wikipedia API from the browser. Do not route that through your
   function or add identifying headers.
-- **Tests.** Add `node:test` tests for the client module (fake `fetch`: success, timeout, 404, bad
-  JSON) and for the server's validation as a pure function. `npm test` must stay green.
+- **Tests.** `node:test` tests cover the client module (fake `fetch`: success, timeout, 400/404/429/500,
+  bad JSON, thrown fetch, placeholder URL, localhost) and the longest-line computation. The server's
+  validation lives with the Worker, not here. `npm test` must stay green.
 - **Simon may be playing.** He often has the local game open. Editing files under `src/` reloads his
   tab and ends his run, and so does reloading or navigating a browser tab he is using. Open your own
   tab for testing. Testing game over writes to `localStorage` key `tot.runs` on `localhost:5183`: save
   the old value first and put it back after.
-- **Check it for real.** Finish a run on the deployed preview and confirm the row lands in the
-  database and shows on a second browser. Then confirm the game-over screen still works with the
-  function switched off, and that it fits at 660 px wide without sideways scrolling.
+- **Check it for real.** Finish a run on the deployed preview (not localhost: it never submits) and
+  confirm the row shows on a second browser. Then confirm the game-over screen still works with the
+  Worker unreachable, and that it fits at 660 px wide without sideways scrolling.
 
 ## Done means
 
 - A finished run appears on the shared board for other players, with no new button to press.
-- With the database unreachable, game over looks exactly as it does today.
-- No secret is in the repo or the built bundle (`grep` the `dist/` output for the key).
-- Simon has confirmed the store costs nothing.
-- `src/types.js` and this guide are updated to match what was built.
+- With the Worker unreachable, game over shows the local board as before.
+- No secret is in the repo or the built bundle (there is none to have: the Worker is public).
+- `src/types.js` and this guide match what was built.
+
+Still open as of 2026-11-15: a real submit from the deployed site has not been seen landing on the
+board (nothing is committed or deployed yet), and the post-submit view (ranks line, highlighted row)
+has only been checked in unit tests of the client, not in a browser.

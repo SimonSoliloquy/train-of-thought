@@ -6,7 +6,9 @@ export const BOARD_SIZE = 10;
 
 const num = (x) => (Number.isFinite(x) ? x : 0);
 
-/** A run as stored: only plain numbers and the start article's title. */
+const title = (x) => (typeof x === 'string' && x ? x.slice(0, 120) : null);
+
+/** A run as stored: only plain numbers, the start article's title and the longest line's two ends. */
 export function cleanRun(run, now = Date.now()) {
   return {
     score: Math.round(num(run && run.score)),
@@ -15,6 +17,8 @@ export function cleanRun(run, now = Date.now()) {
     tickets: Math.round(num(run && run.tickets)),
     delivered: Math.round(num(run && run.delivered)),
     start: typeof (run && run.start) === 'string' ? run.start.slice(0, 120) : '',
+    lineFrom: title(run && run.lineFrom),
+    lineTo: title(run && run.lineTo),
     at: Math.round(num(run && run.at) || now),
   };
 }

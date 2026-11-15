@@ -334,8 +334,12 @@
  *   'trainsChanged'    { }
  *   'payday'           { amount: number, income: number, fares: number, upkeep: number }
  *   'toast'            { text: string, tone: 'info'|'good'|'bad' }
- *   'gameOver'         { score: number, time: number, delivered: number, stations: number, tickets: number, start: string }
- *                      (tickets met, and the article the run started on)
+ *   'gameOver'         { score: number, time: number, delivered: number, stations: number, tickets: number, start: string,
+ *                        lineFrom: string|null, lineTo: string|null }
+ *                      (tickets met, the article the run started on, and the run's longest train line: of every pair of
+ *                      stations joined by built track, the pair whose shortest way along the track is longest in track
+ *                      length (sum of route.length), see longestLine() in src/sim/line.js; both null with fewer than two
+ *                      connected stations. It does not change the score.)
  *
  * @typedef {Object} Game
  * @property {GameState} state
@@ -430,6 +434,47 @@
  * It calls Game actions and Renderer methods; nothing calls into it except update().
  * @typedef {Object} UI
  * @property {(dt: number) => void} update   real seconds; refresh live numbers
+ */
+
+/**
+ * BOARDS. The game-over screen shows the best runs at once from this browser (src/ui/board.js,
+ * localStorage key 'tot.runs', top 10) and then, when the shared Worker answers, the best runs of
+ * everyone today (UTC, the server's day) and of all time (src/ui/remote-board.js). Without an answer
+ * the local board stays: the screen never waits on the network and never shows an error for it.
+ * Shared Worker: LEADERBOARD_URL in remote-board.js; public, no keys; this game only calls its
+ * /train-of-thought/ routes. While the address holds the placeholder WORKER_SUBDOMAIN nothing is fetched.
+ *   POST {url}/train-of-thought/submit  SubmittedRun -> SubmitAnswer   (never from localhost / 127.x / [::1])
+ *   GET  {url}/train-of-thought/top?scope=daily|alltime&n=10 -> SharedRun[]
+ * localStorage: 'tot.player' a random id for this browser; 'tot.name' the name last typed (optional).
+ *
+ * @typedef {Object} SubmittedRun
+ * @property {string} player       random id kept in this browser
+ * @property {string} name         0-20 characters, plain; '' = Anonymous (the server filters names too)
+ * @property {number} score
+ * @property {number} time         whole game seconds
+ * @property {number} stations
+ * @property {number} tickets
+ * @property {number} delivered
+ * @property {string} start        1-120 characters
+ * @property {string|null} lineFrom
+ * @property {string|null} lineTo
+ *
+ * @typedef {Object} SubmitAnswer   every field null when the server sent something else
+ * @property {number|null} rankAllTime   1 = best
+ * @property {number|null} rankDaily
+ * @property {number|null} totalPlayers
+ *
+ * @typedef {Object} SharedRun   as drawn: a null or filtered name reads 'Anonymous'
+ * @property {string} name
+ * @property {number} score
+ * @property {number} stations
+ * @property {number} tickets
+ * @property {number} delivered
+ * @property {number} time
+ * @property {string} start
+ * @property {string|null} lineFrom
+ * @property {string|null} lineTo
+ * @property {number|null} at   ms since 1970, when the server says
  */
 
 export {};

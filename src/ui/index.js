@@ -32,8 +32,8 @@ export function createUI({ root, game, renderer, wiki }) {
 
   // Layout: gold readout top left with the tickets under it, speed top right, the goal line top
   // centre (its own row when narrow). The stage holds the notes (riding label, toasts). The
-  // station's real Wikipedia article is a panel down the right edge, only while a station is
-  // selected; its links are how the player picks where to build. No build button: the 3D view
+  // station's real Wikipedia article is a translucent panel down the right edge that opens only
+  // when the player clicks a station; its links are how the player picks where to build. No build button: the 3D view
   // floats it over the place being built towards.
   const notes = h('div', { class: 'tot-notes' }, rideLabel.el, toasts.el);
   const stage = h('div', { class: 'tot-stage' }, notes);
@@ -97,7 +97,9 @@ export function createUI({ root, game, renderer, wiki }) {
     if (state.phase !== 'running') return;
     switch (pick.kind) {
       case 'station':
+        // A click on a station selects it (signposts) and opens its article.
         ctx.select(pick.title);
+        article.open(pick.title);
         break;
       case 'ghost':
         // A signpost: price building towards it from the station being viewed.
@@ -107,8 +109,9 @@ export function createUI({ root, game, renderer, wiki }) {
         buildCard.build(pick.title);
         break;
       case 'article':
-        // The picture over a station: the same as clicking the station, which shows its article.
+        // The picture over a station: the same as clicking the station.
         ctx.select(pick.title);
+        article.open(pick.title);
         break;
       case 'thought':
         break; // ordinary passengers are no longer listed or opened anywhere
@@ -136,7 +139,8 @@ export function createUI({ root, game, renderer, wiki }) {
     const t = e.target;
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
     if (e.key === 'Escape') {
-      if (typing) return; // the search box handles its own Escape
+      if (article.close()) { e.preventDefault(); return; } // the article first; the station stays selected
+      if (typing) return;
       if (ctx.back()) e.preventDefault();
       else if (ctx.riding != null) { ctx.stopRide(); e.preventDefault(); }
       return;

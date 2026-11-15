@@ -186,12 +186,20 @@
 .tot-artpanel {
   position: absolute; right: 10px; top: 48px; bottom: 12px; width: min(420px, 38vw); z-index: 3;
   display: flex; flex-direction: column; overflow: hidden; padding: 0;
-  background: #f8f9fa; color: #202122;
+  /* slightly translucent, so the map stays visible behind the page */
+  background: rgba(248, 249, 250, 0.8); color: #202122;
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
 }
+.tot-art-head { flex: none; display: flex; align-items: flex-start; gap: 8px; padding: 8px 8px 6px 14px; border-bottom: 1px solid #a2a9b1; }
 .tot-art-title {
-  flex: none; margin: 0; padding: 10px 14px 8px; font: 400 22px/1.2 'Linux Libertine', Georgia, 'Times New Roman', serif;
-  border-bottom: 1px solid #a2a9b1; color: #000; overflow-wrap: anywhere;
+  flex: 1 1 auto; min-width: 0; margin: 0; padding: 2px 0 0; font: 400 22px/1.2 'Linux Libertine', Georgia, 'Times New Roman', serif;
+  color: #000; overflow-wrap: anywhere;
 }
+.tot .tot-art-close {
+  flex: none; width: 34px; height: 34px; border: 1px solid #a2a9b1; border-radius: 50%; background: #fff; color: #202122;
+  font: 700 22px/1 system-ui, sans-serif; cursor: pointer; display: grid; place-items: center; padding: 0 0 2px;
+}
+.tot .tot-art-close:hover { background: #ffd24a; border-color: #b8860b; }
 .tot-article {
   flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 14px 24px; user-select: text;
   font: 14px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; overflow-wrap: anywhere;
@@ -204,11 +212,11 @@
 .tot-article li { margin: 0.15em 0; }
 .tot-article dl { margin: 0.3em 0; } .tot-article dd { margin-left: 1.4em; }
 .tot-article img { max-width: 100%; height: auto; display: block; margin: 4px auto; border-radius: 2px; }
-.tot-article figure, .tot-article .thumb { margin: 8px 0; padding: 4px; background: #fff; border: 1px solid #c8ccd1; text-align: center; }
+.tot-article figure, .tot-article .thumb { margin: 8px 0; padding: 4px; background: rgba(255, 255, 255, 0.7); border: 1px solid #c8ccd1; text-align: center; }
 .tot-article figcaption, .tot-article .thumbcaption, .tot-article .gallerytext { font-size: 12px; line-height: 1.4; color: #54595d; text-align: left; padding: 3px 2px 0; }
-.tot-article table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 8px 0; font-size: 12.5px; background: #fff; }
+.tot-article table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 8px 0; font-size: 12.5px; background: rgba(255, 255, 255, 0.7); }
 .tot-article th, .tot-article td { border: 1px solid #c8ccd1; padding: 3px 6px; vertical-align: top; text-align: left; }
-.tot-article th { background: #eaecf0; }
+.tot-article th { background: rgba(234, 236, 240, 0.8); }
 .tot-article .infobox { border: 1px solid #a2a9b1; }
 .tot-article .hatnote { font-style: italic; color: #54595d; font-size: 13px; margin: 0.4em 0; padding-left: 1em; }
 .tot-article blockquote { margin: 0.6em 0; padding: 0 0 0 12px; border-left: 3px solid #c8ccd1; color: #333; }

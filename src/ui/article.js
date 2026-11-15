@@ -1,5 +1,7 @@
-// The article panel: the station's real Wikipedia article, shown when a station is selected
-// (a click on the station or on the picture floating above it). The article is the game board:
+// The article panel: the station's real Wikipedia article. It opens ONLY when the player clicks a
+// station (or the picture floating above it), never by itself, and closes with its close button,
+// Esc, a click on empty map, or when the game moves on to another station. Closing it leaves the
+// station selected, so its signposts stay. The article is the game board:
 // every link in it to another article can be clicked to price a build towards that article,
 // exactly as a signpost can. Stations you already have and ticket ends are marked in the text.
 import { h, clear, setText } from './dom.js';
@@ -8,8 +10,10 @@ import { sanitizeArticle } from './sanitize.js';
 export function createArticle(ctx, wiki) {
   const { game, state } = ctx;
   const title = h('h2', { class: 'tot-art-title' });
+  const closeBtn = h('button', { class: 'tot-art-close', type: 'button', title: 'Close (Esc)', 'aria-label': 'Close the article', text: '\u00d7', onClick: () => close() });
+  const head = h('div', { class: 'tot-art-head' }, title, closeBtn);
   const body = h('div', { class: 'tot-article' });
-  const el = h('aside', { class: 'tot-panel tot-artpanel', hidden: true, 'aria-label': 'Article' }, title, body);
+  const el = h('aside', { class: 'tot-panel tot-artpanel', hidden: true, 'aria-label': 'Article' }, head, body);
   let station = null;   // title of the station whose article is showing
   let links = new Set(); // that article's links (canonical titles)
   let token = 0;         // guards against a slow article arriving after the selection moved on
@@ -113,19 +117,29 @@ export function createArticle(ctx, wiki) {
   body.addEventListener('click', onActivate);
   body.addEventListener('keydown', (e) => { if (e.key === 'Enter') onActivate(e); });
 
+  /** Close the panel (the station stays selected). Returns whether it was open. */
+  function close() {
+    if (!station) return false;
+    station = null;
+    token++;
+    el.hidden = true;
+    clear(body);
+    return true;
+  }
+
+  /** The player clicked a station: show its article. */
+  function open(t) {
+    if (!t || !state.stations.has(t)) return;
+    if (t === station) return;
+    show(t);
+  }
+
+  /** The selection moved without a click on a station (a build finished, or it was cleared): put the article away. */
   function onSelection() {
     const next = ctx.sel ? ctx.sel.title : null;
-    if (next === station) return;
-    if (!next) {
-      station = null;
-      token++;
-      el.hidden = true;
-      clear(body);
-      return;
-    }
-    show(next);
+    if (station && next !== station) close();
   }
 
   ctx.bus.on('selection', onSelection);
-  return { el, refresh: mark };
+  return { el, open, close, refresh: mark, get isOpen() { return !!station; } };
 }

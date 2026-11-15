@@ -59,7 +59,9 @@ export function createScreens(ctx) {
           stat('Passengers delivered', fmtInt(d.delivered)),
           stat('Stations', fmtInt(d.stations)),
           stat('Score', fmtInt(d.score))),
-        h('button', { class: 'tot-btn tot-btn-primary tot-btn-big', type: 'button', text: 'New run', onClick: () => location.reload() })));
+        h('button', { class: 'tot-btn tot-btn-primary tot-btn-big', type: 'button', text: 'New run', onClick: () => location.reload() }),
+        h('p', { class: 'tot-over-credit' }, 'Built by ',
+          h('a', { href: 'https://simonsoliloquy.com', target: '_blank', rel: 'noopener', text: 'simonsoliloquy.com' }))));
   }
 
   /** Redraw only when what is on screen would change. */

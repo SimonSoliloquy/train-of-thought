@@ -39,7 +39,9 @@ export function createUI({ root, game, renderer, wiki }) {
   // floats it over the place being built towards.
   const notes = h('div', { class: 'tot-notes' }, rideLabel.el, toasts.el);
   const stage = h('div', { class: 'tot-stage' }, notes);
-  const app = h('div', { class: 'tot tot-root' }, hud.el, hud.speed, tour.link, goal.el, tickets.el, stage, article.el, tour.card, tour.splash, screens.el);
+  // A small credit in the corner of the main page.
+  const credit = h('a', { class: 'tot-credit', href: 'https://simonsoliloquy.com', target: '_blank', rel: 'noopener', text: 'simonsoliloquy.com' });
+  const app = h('div', { class: 'tot tot-root' }, hud.el, hud.speed, tour.link, goal.el, tickets.el, stage, credit, article.el, tour.card, tour.splash, screens.el);
   app.dataset.phase = state.phase === 'gameOver' ? 'over' : state.phase;
   root.append(app);
 

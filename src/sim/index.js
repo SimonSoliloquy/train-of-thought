@@ -34,6 +34,7 @@ const fail = (reason) => ({ ok: false, reason });
 export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTrain = true, tickets = true }) {
   const ticketsOn = tickets && spawnThoughts;
   const clockWaits = tickets; // the clock starts with the first build (the game as played)
+  const overheadOn = tickets;  // the company's own running cost (the game as played)
   const rng = mulberry32(seed >>> 0);
   const { on, emit } = createEmitter();
   const toast = (text, tone = 'info') => emit('toast', { text, tone });
@@ -154,7 +155,10 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
   function upkeepRate() {
     let trainUpkeep = 0;
     for (const tr of state.trains) trainUpkeep += TRAIN_TYPES[tr.typeId].upkeepPerMin;
-    return (trackHexTotal * ECON.trackUpkeepPerHexPerMin + trainUpkeep) * state.inflation;
+    // The company itself costs gold to run once the clock has started, however small the network:
+    // a few stations cannot sit still for ever, only tickets keep you ahead.
+    const overhead = overheadOn && state.tracks.length ? ECON.overheadPerMin : 0;
+    return (trackHexTotal * ECON.trackUpkeepPerHexPerMin + trainUpkeep + overhead) * state.inflation;
   }
 
   // ------------------------------------------------------------ goals

@@ -25,11 +25,12 @@ export const WORLD = {
 };
 
 export const ECON = {
-  startMoney: 550,
+  startMoney: 600,
   stationBaseCost: 55,
   stationPopularityCost: 190,       // + popularity (0..1) * this
   specialPageCostMult: 5,           // lists and disambiguation pages
   trackCostPerHex: { ground: 13, ledge: 16, bridge: 27, tunnel: 35 },
+  overheadPerMin: 36,               // what the company costs to run once the clock starts, whatever its size (times inflation)
   trackUpkeepPerHexPerMin: 2.3,
   linkIncomePerUniqueLinkPerMin: 0.05,  // the steady trickle: each station pays for the links its page has
   fareBase: 6,
@@ -63,8 +64,8 @@ export const ECON = {
   goalRewardBase: 40,
   // Tickets: routes to find and build. Never more than maxTickets at once.
   maxTickets: 3,
-  ticketBase: 100,                  // a ticket is the big bonus: reward = (base + perLink * links) * inflation when issued
-  ticketPerLink: 320,
+  ticketBase: 150,                  // a ticket is the big bonus: reward = (base + perLink * links) * inflation when issued
+  ticketPerLink: 430,
   ticketMaxLinks: 4,
   ticketSecondsBase: 420,           // time before a ticket is withdrawn
   ticketSecondsPerLink: 240,

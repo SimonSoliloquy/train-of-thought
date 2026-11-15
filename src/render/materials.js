@@ -49,41 +49,79 @@ export function addMist(material, uniforms) {
   return material;
 }
 
-export function createMaterials(uniforms) {
-  const lambert = (opts) => addMist(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide, ...opts }), uniforms);
+// Surface vertices glide from aPrev to their height starting at aBorn (seconds of uTime).
+const REVEAL_VERTEX = /* glsl */`
+#include <begin_vertex>
+{
+  float revT = clamp( ( uTime - aBorn ) / REVEAL_DUR, 0.0, 1.0 );
+  revT = 1.0 - ( 1.0 - revT ) * ( 1.0 - revT ) * ( 1.0 - revT );
+  transformed.y = mix( aPrev, transformed.y, revT );
+}
+`;
 
+// Land at the rim of the revealed area dissolves into the mist colour (after lighting, so
+// lit and shaded faces alike vanish into the background).
+const EDGE_MIST_FRAGMENT = /* glsl */`
+gl_FragColor.rgb = mix( gl_FragColor.rgb, uMistColor, max( smoothstep( uMistTop, uMistBottom, vMistY ), smoothstep( 0.0, 0.55, vEdge ) ) );
+#include <fog_fragment>
+`;
+
+/** Landscape surface: flat-shaded facets, mist fade, and the rise-out-of-the-mist reveal. */
+export function createTerrainMaterial(uniforms, revealDur) {
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, side: THREE.FrontSide });
+  m.shadowSide = THREE.FrontSide;
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uMistColor = uniforms.uMistColor;
+    shader.uniforms.uMistTop = uniforms.uMistTop;
+    shader.uniforms.uMistBottom = uniforms.uMistBottom;
+    shader.uniforms.uTime = uniforms.uTime;
+    shader.vertexShader = `varying float vMistY;\nvarying float vEdge;\nattribute float aEdge;\nattribute float aPrev;\nattribute float aBorn;\nuniform float uTime;\n#define REVEAL_DUR ${revealDur.toFixed(3)}\n`
+      + shader.vertexShader.replace('#include <begin_vertex>', REVEAL_VERTEX + '\nvEdge = aEdge;\n').replace('#include <project_vertex>', WORLD_Y_VERTEX);
+    shader.fragmentShader = 'uniform vec3 uMistColor;\nuniform float uMistTop;\nuniform float uMistBottom;\nvarying float vMistY;\nvarying float vEdge;\n'
+      + shader.fragmentShader.replace('#include <fog_fragment>', EDGE_MIST_FRAGMENT);
+  };
+  m.customProgramCacheKey = () => 'tot-terrain';
+  return m;
+}
+
+/** Continuous water surface over the river beds: gentle waves, rises with the land. */
+export function createWaterSurfaceMaterial(uniforms, revealDur) {
   const water = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(WATER.surface),
-    roughness: 0.18,
-    metalness: 0.05,
-    transparent: true,
-    opacity: 0.8,
-    flatShading: true,
-    side: THREE.FrontSide,
+    color: new THREE.Color(WATER.surface), roughness: 0.16, metalness: 0.05,
+    transparent: true, opacity: 0.82, flatShading: true, side: THREE.FrontSide,
   });
   water.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
-    shader.vertexShader = 'uniform float uTime;\n' + shader.vertexShader.replace('#include <begin_vertex>', /* glsl */`
-#include <begin_vertex>
+    shader.uniforms.uMistColor = uniforms.uMistColor;
+    shader.uniforms.uMistTop = uniforms.uMistTop;
+    shader.uniforms.uMistBottom = uniforms.uMistBottom;
+    shader.fragmentShader = 'uniform vec3 uMistColor;\nuniform float uMistTop;\nuniform float uMistBottom;\nvarying float vMistY;\nvarying float vEdge;\n'
+      + shader.fragmentShader.replace('#include <fog_fragment>', EDGE_MIST_FRAGMENT + '\ngl_FragColor.a *= 1.0 - smoothstep( 0.2, 0.6, vEdge );\n');
+    shader.vertexShader = `varying float vMistY;\nvarying float vEdge;\nattribute float aEdge;\nattribute float aPrev;\nattribute float aBorn;\nuniform float uTime;\n#define REVEAL_DUR ${revealDur.toFixed(3)}\n`
+      + shader.vertexShader.replace('#include <project_vertex>', WORLD_Y_VERTEX).replace('#include <begin_vertex>', REVEAL_VERTEX + '\nvEdge = aEdge;\n' + /* glsl */`
 {
-  vec4 wpw = vec4( transformed, 1.0 );
-  #ifdef USE_INSTANCING
-    wpw = instanceMatrix * wpw;
-  #endif
-  wpw = modelMatrix * wpw;
-  transformed.y += ( sin( wpw.x * 2.3 + uTime * 1.4 ) + sin( wpw.z * 1.9 - uTime * 1.1 ) + sin( ( wpw.x + wpw.z ) * 3.1 + uTime * 2.0 ) * 0.5 ) * 0.018;
+  vec4 wpw = modelMatrix * vec4( transformed, 1.0 );
+  transformed.y += ( sin( wpw.x * 2.3 + uTime * 1.4 ) + sin( wpw.z * 1.9 - uTime * 1.1 ) + sin( ( wpw.x + wpw.z ) * 3.1 + uTime * 2.0 ) * 0.5 ) * 0.014;
 }
 `);
   };
-  water.customProgramCacheKey = () => 'tot-water';
+  water.customProgramCacheKey = () => 'tot-water-surface';
+  return water;
+}
+
+export function createMaterials(uniforms, revealDur = 0.55) {
+  const lambert = (opts) => addMist(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide, ...opts }), uniforms);
+
+
 
   return {
-    terrain: lambert({}),
+    terrain: createTerrainMaterial(uniforms, revealDur),
     props: lambert({}),
     track: lambert({}),
     station: lambert({}),
+    signHover: lambert({ emissive: new THREE.Color('#6a5014') }),
     trim: lambert({}),
-    water,
+    water: createWaterSurfaceMaterial(uniforms, revealDur),
     cloud: new THREE.MeshLambertMaterial({
       color: 0xffffff, emissive: new THREE.Color('#aeb9c2'), transparent: true, opacity: 0.62, depthWrite: false,
     }),
@@ -101,7 +139,7 @@ export function createMaterials(uniforms) {
     }),
     smoke: new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, depthWrite: false, flatShading: true }),
     selection: new THREE.MeshBasicMaterial({ color: 0xffd966, transparent: true, opacity: 0.95, toneMapped: false, depthWrite: false }),
-    mistPlane: new THREE.MeshBasicMaterial({ color: new THREE.Color(SKY.mist) }),
+    mistPlane: addMist(new THREE.MeshBasicMaterial({ color: new THREE.Color(SKY.mist) }), uniforms),
   };
 }
 

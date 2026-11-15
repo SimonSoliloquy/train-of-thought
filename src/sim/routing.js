@@ -1,8 +1,9 @@
-// Passenger routing over the line network. Nodes are built stations; an edge joins two
-// stations that are consecutive stops on some line. Distances (in stops) are computed
-// lazily per destination by BFS and cached until the network changes.
+// Passenger routing over the served network. Nodes are built stations; an edge is a track
+// that has a train on it (level >= 1). Distances (in stops) are computed lazily per
+// destination by BFS and cached until the network changes.
 
-export function createRouter(getLines) {
+/** @param {() => Iterable<[string, string]>} getEdges */
+export function createRouter(getEdges) {
   let adj = null;
   const distCache = new Map();
 
@@ -18,18 +19,15 @@ export function createRouter(getLines) {
       if (!adj.has(a)) adj.set(a, new Set());
       adj.get(a).add(b);
     };
-    for (const line of getLines()) {
-      const s = line.stations;
-      for (let i = 0; i + 1 < s.length; i++) {
-        if (s[i] === s[i + 1]) continue;
-        link(s[i], s[i + 1]);
-        link(s[i + 1], s[i]);
-      }
+    for (const [a, b] of getEdges()) {
+      if (a === b) continue;
+      link(a, b);
+      link(b, a);
     }
     return adj;
   }
 
-  /** Map station -> stops to `dest`. Empty when dest is not on any line. */
+  /** Map station -> stops to `dest`. Empty when dest is not on a served track. */
   function distancesTo(dest) {
     let d = distCache.get(dest);
     if (d) return d;

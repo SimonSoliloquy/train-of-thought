@@ -1,7 +1,7 @@
 // ASCII preview of a world: node src/world/dump.mjs [seed] [width] [height]
 // Prints (1) biomes with the sample network on top, (2) elevation, (3) route summaries.
 // Biomes: g grassland, f forest, j jungle, d desert, M mountains, r riverlands, C canyon, ~ water.
-// Network: @ built station, o ghost, track kinds: + ground, L ledge, H bridge, T tunnel.
+// Network: @ built station, o unbuilt reservation (invisible in game), track kinds: + ground, L ledge, H bridge, T tunnel.
 // Elevation digit = floor(elevation / maxElevation * 9.99).
 
 import { createWorld } from './index.js';
@@ -18,12 +18,13 @@ const KIND_CH = { ground: '+', ledge: 'L', bridge: 'H', tunnel: 'T' };
 // ---- a small sample network: start, its links, build a few, their links ----
 const links = (name, n) => Array.from({ length: n }, (_, i) => `${name}/${i}`);
 world.placeStart('Start');
+world.noteLinks('Start', links('Start', 10));
 world.placeGhosts('Start', links('Start', 10));
 const routes = [];
 function build(from, to) {
   const { cheap, direct, same } = world.findRoutes(from, to);
-  world.commitRoute(cheap);
   world.setBuilt(to);
+  world.commitRoute(cheap);
   routes.push({ cheap, direct, same });
 }
 for (const t of ['Start/0', 'Start/3', 'Start/6', 'Start/9']) build('Start', t);
@@ -40,6 +41,7 @@ for (let g = 0; g < 10 && queue.length; g++) {
     const p = world.placements.get(to);
     if (!p || p.state === 'built') continue;
     build(from, to);
+    world.noteLinks(to, links(to, 10));
     world.placeGhosts(to, links(to, 10));
     queue.push(to);
   }

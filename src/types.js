@@ -106,6 +106,12 @@
  *   parent, titles and existing map always give the same positions. Earlier links sit nearer
  *   (WORLD.ghostMinDist) and later ones farther (WORLD.ghostMaxDist); the fan points away from
  *   the parent's own parent so the network grows outward; stations keep WORLD.minStationSpacing.
+ * @property {(title: string, links: string[]) => void} [noteLinks]
+ *   Optional. The sim calls it when a station is built (before placeGhosts for that station), with
+ *   the article's full link list. The layout uses it so that an unbuilt link sits towards the other
+ *   built stations that also link to it: direction on the map reflects how articles are related.
+ *   Unbuilt placements are invisible reservations and MAY be moved by later noteLinks/placeGhosts
+ *   calls; a built station never moves.
  * @property {(title: string) => {revealed: Tile[]}} setBuilt   ghost -> built; reveals WORLD.revealStation.
  * @property {(fromTitle: string, toTitle: string) => {cheap: Route, direct: Route, same: boolean}} findRoutes
  *   cheap = lowest construction cost (winds round water and high ground);
@@ -128,40 +134,47 @@
  * @property {number} q
  * @property {number} r
  * @property {number} uniqueLinks    links no earlier-built station had; fixed when built
- * @property {number} incomePerMin   uniqueLinks * ECON.linkIncomePerUniqueLinkPerMin (0 for list/disambiguation)
+ * @property {number} incomePerMin   uniqueLinks * ECON.linkIncomePerUniqueLinkPerMin (0 for list/disambiguation);
+ *                                   the UI shows it per payday (x ECON.paydaySeconds / 60)
  * @property {number[]} waiting      ids of thoughts waiting on the platform
  * @property {number} builtAt        game time, seconds
  */
 
 /**
+ * A stretch of track between two stations, and the one train that serves it. There are no
+ * lines to draw: the player upgrades a track and its train shuttles between its two stations
+ * on its own. Upgrades go one way: bare track -> local -> express -> then a CHOICE of final
+ * train, freight (big, slower) or bullet (small, faster). See TRACK_UPGRADES in config.js.
  * @typedef {Object} Track
  * @property {number} id
  * @property {string} from   == route.from
  * @property {string} to     == route.to
  * @property {Route} route
- */
-
-/**
- * A service the player drew: trains shuttle end to end and back, stopping at every station.
- * @typedef {Object} Line
- * @property {number} id
- * @property {string} name
- * @property {string} color        from LINE_COLORS
- * @property {string[]} stations   >= 2 built stations; each consecutive pair is joined by a Track
- * @property {number[]} trainIds
+ * @property {number} level           0 bare track (no train), 1 local, 2 express, 3 final train
+ * @property {string|null} typeId     key of TRAIN_TYPES for the train serving it, null at level 0
+ * @property {number|null} trainId    its train, null at level 0
  */
 
 /**
  * @typedef {Object} Train
  * @property {number} id
  * @property {string} typeId       key of TRAIN_TYPES
- * @property {number} lineId
+ * @property {number} trackId      the one track it serves, for life
  * @property {'moving'|'dwelling'} state
- * @property {number} trackId      track it is on, or about to leave along when dwelling
- * @property {number} t            0..1 along that track's route, measured from route.from
+ * @property {number} t            0..1 along the track's route, measured from route.from
  * @property {boolean} forward     true when travelling route.from -> route.to
  * @property {string} atStation    last station stopped at (current one when dwelling)
  * @property {number[]} passengers thought ids on board
+ */
+
+/**
+ * What the next upgrade of a track would be. One option at levels 0 and 1, two at level 2.
+ * @typedef {Object} UpgradeOption
+ * @property {string} typeId     key of TRAIN_TYPES
+ * @property {string} name       e.g. 'Local'
+ * @property {string} blurb      a few words, e.g. 'carries 12, slower'
+ * @property {number} cost       after inflation, whole number; exactly what upgradeTrack charges
+ * @property {boolean} affordable
  */
 
 /**
@@ -180,6 +193,36 @@
  */
 
 /**
+ * Money arrives in one lump every ECON.paydaySeconds game seconds, so the player sees a single
+ * clear number: station income for the period, plus fares collected during it, minus running
+ * costs for the period. Purchases are charged at once.
+ * @typedef {Object} Payday
+ * @property {number} period     ECON.paydaySeconds
+ * @property {number} in         game seconds until the next payday
+ * @property {number} income     station link income accrued so far this period
+ * @property {number} fares      fares collected so far this period
+ * @property {number} upkeep     running costs accrued so far this period (positive number)
+ * @property {number} pending    income + fares - upkeep so far this period
+ * @property {number} forecast   what this payday will pay if nothing else happens:
+ *                               pending + the rest of the period at the current income and upkeep rates
+ * @property {{amount: number, income: number, fares: number, upkeep: number, time: number}|null} last
+ *                               the payday that just happened, null before the first
+ */
+
+/**
+ * One goal at a time, in plain words, with a gold reward paid the moment it is met. The first
+ * few teach the game in order (build a station, put a train on the track, deliver a passenger,
+ * upgrade a track); after that they repeat and grow (deliver N, reach N stations).
+ * @typedef {Object} Goal
+ * @property {string} id
+ * @property {string} text       what to do, e.g. 'Deliver 5 passengers'
+ * @property {string} how        how to do it, in a few words, e.g. 'Click the price tag on a track'
+ * @property {number} progress
+ * @property {number} target
+ * @property {number} reward     gold paid when progress reaches target
+ */
+
+/**
  * Read-only for everyone but the sim. Objects are mutated in place between frames.
  * @typedef {Object} GameState
  * @property {'idle'|'loading'|'running'|'over'} phase
@@ -188,21 +231,20 @@
  * @property {number} money
  * @property {number} score
  * @property {number} inflation     current multiplier, >= 1
- * @property {number} incomePerMin  link income only
- * @property {number} upkeepPerMin  track + trains, after inflation
- * @property {number} faresPerMin   rolling average over the last 60 game seconds
+ * @property {Payday} payday      money changes at a payday, when the player buys something, and when a reward
+ *                                (a goal or a route bonus) is paid, which is instant
+ * @property {Goal|null} goal     the one thing the game is asking for right now; doubles as the tutorial
+ * @property {number} streak      deliveries in a row with no passenger giving up; each step adds
+ *                                ECON.streakFarePerStep to fares, up to ECON.streakFareMax
  * @property {number} delivered
  * @property {number} lost
  * @property {number} reputation    0..1; fast deliveries raise it, thoughts that give up lower it. Scales fares
  *                                  and how many thoughts appear (ECON.reputation*)
  * @property {number} uniqueLinks   total across all stations
  * @property {number|null} bankruptIn  seconds until bankruptcy while money < 0, else null
- * @property {string[]} unlockedTrainTypes
- * @property {{uniqueLinks: number, unlock: string}|null} nextMilestone
  * @property {Map<string, Station>} stations   built stations by title
  * @property {Map<string, ArticleStub>} stubs  facts for every title on the map, ghost or built
  * @property {Track[]} tracks
- * @property {Line[]} lines
  * @property {Train[]} trains
  * @property {Thought[]} thoughts   waiting and riding only; finished thoughts are removed
  */
@@ -226,51 +268,66 @@
  *   'trackBuilt'       { track: Track }                  (also fired with stationBuilt)
  *   'thoughtSpawned'   { thought: Thought }
  *   'thoughtBoarded'   { thought: Thought, train: Train }
- *   'thoughtDelivered' { thought: Thought, fare: number, station: string }
+ *   'thoughtDelivered' { thought: Thought, fare: number, station: string, streak: number }   (the fare, streak bonus
+ *                      included, is banked for the next payday)
+ *   'routeBonus'       { station: string, count: number, amount: number }   building a station that passengers were
+ *                      waiting for pays ECON.routeBonusFraction of each one's fare at once
+ *   'goalDone'         { goal: Goal, reward: number, next: Goal|null }
  *   'thoughtLost'      { thought: Thought }
- *   'linesChanged'     { }
+ *   'trackUpgraded'    { track: Track, train: Train }
  *   'trainsChanged'    { }
- *   'milestone'        { unlock: string, uniqueLinks: number }
+ *   'payday'           { amount: number, income: number, fares: number, upkeep: number }
  *   'toast'            { text: string, tone: 'info'|'good'|'bad' }
  *   'gameOver'         { score: number, time: number, delivered: number, stations: number }
  *
  * @typedef {Object} Game
  * @property {GameState} state
  * @property {(name: string, handler: (payload: any) => void) => () => void} on
- * @property {() => Promise<void>} start
+ * @property {() => Promise<void>} start   Called by the UI as soon as the page loads: there is no start button.
  *   phase 'loading' -> picks wiki.randomStart(), places it, adds its ghosts, phase 'running'. Fires 'started'.
  * @property {(dt: number) => void} update   dt in real seconds; the sim multiplies by state.speed.
  * @property {(speed: number) => void} setSpeed
  * @property {(fromTitle: string, toTitle: string) => ({ok: true, cheap: Quote, direct: Quote, same: boolean} | {ok: false, reason: string})} quoteBuild
  *   from must be built; to must be on the map; from's article must link to `to`
  *   (or, when both are built, either may link to the other); no track may already join them.
- * @property {(fromTitle: string, toTitle: string, style: 'cheap'|'direct') => Promise<Result>} build
+ * @property {(fromTitle: string, toTitle: string, style?: 'cheap'|'direct') => Promise<Result>} build
+ *   style defaults to 'cheap'; the UI no longer offers a choice of route.
  *   Pays, lays the track, and if `to` was a ghost: loads its article, builds the station, adds its ghosts.
  * @property {(fromTitle: string, linkTitle: string) => Promise<Result>} survey
  *   Puts any one of a built station's links on the map as a ghost (free), so it can be built to.
- * @property {(stations: string[]) => (Result & {line?: Line})} createLine
- * @property {(lineId: number, stations: string[]) => Result} setLineStations   Trains on it restart from the first stop.
- * @property {(lineId: number) => Result} deleteLine   Sells its trains at ECON.sellRefund.
- * @property {(typeId: string, lineId: number) => (Result & {train?: Train})} buyTrain
- * @property {(trainId: number) => Result} sellTrain
+ * @property {(trackId: number) => ({ok: true, options: UpgradeOption[]} | {ok: false, reason: string})} quoteUpgrade
+ *   The next step for this track. ok:false with a reason when it is fully upgraded.
+ * @property {(trackId: number, typeId?: string) => Result} upgradeTrack
+ *   Pays and puts that train on the track (replacing the one there; its passengers get off at
+ *   the station it last stopped at). typeId may be omitted when there is only one option.
+ *   The new train starts running at once: there is nothing else to press.
  * @property {(a: string, b: string) => Track|null} trackBetween   in either direction
  */
 
 // ---------------------------------------------------------------- render
 
 /**
- * @typedef {{kind: 'station'|'ghost', title: string} | {kind: 'train', trainId: number} | {kind: 'thought', thoughtId: number} | {kind: 'none'}} Pick
+ * @typedef {{kind: 'station'|'ghost', title: string} | {kind: 'train', trainId: number} | {kind: 'thought', thoughtId: number} | {kind: 'upgrade', trackId: number, typeId: string} | {kind: 'none'}} Pick
+ *   'ghost' is a click on a link signpost (or the marker of the link being priced).
  *   'thought' is a click on a passenger waiting on a platform.
+ *   'upgrade' is a click on a track's upgrade tag; the UI then calls game.upgradeTrack(trackId, typeId).
  *
  * The renderer subscribes to game events itself and reads game.state every frame.
+ * It draws, without being asked:
+ *   - an upgrade tag floating over every track that can still be upgraded (from game.quoteUpgrade):
+ *     the train's name and price, bright when affordable and dim when not, two tags side by side
+ *     when there is a choice; tracks with an affordable upgrade are highlighted;
+ *   - "+$N" rising from a station when a thought is delivered there ('thoughtDelivered'), with the
+ *     streak when it is 2 or more; a bigger burst for 'routeBonus' and for 'goalDone';
+ *   - on each link signpost: the price to build there (game.quoteBuild) and, when passengers are
+ *     waiting to go there, how many and what they will pay; such signposts stand out.
  * @typedef {Object} Renderer
  * @property {(dt: number) => void} update          real seconds
  * @property {(handler: (pick: Pick) => void) => () => void} onPick   click (not drag) on the 3D view
- * @property {(title: string|null) => void} setSelection   ring/highlight on one station or ghost
+ * @property {(title: string|null) => void} setSelection   ring/highlight on one station, with its link signposts, or the marker of an unbuilt link
  * @property {(thoughtId: number|null) => void} setThoughtSelection   the station's speech bubble follows this waiting passenger
  * @property {(routes: Route[]|null, activeStyle?: 'cheap'|'direct') => void} setRoutePreview
- *   Draws proposed routes over the terrain; the active one bright, the other dim.
- * @property {(lineId: number|null) => void} setLineHighlight
+ *   Draws a proposed route over the terrain.
  * @property {(title: string) => void} focus        glide the camera to a station or ghost
  * @property {(trainId: number|null) => void} follow   ride-along camera; null returns to free orbit
  * @property {() => void} dispose
@@ -279,9 +336,15 @@
 // ---------------------------------------------------------------- ui
 
 /**
- * The UI owns the start screen (calls game.start()), HUD, thought board, station card,
- * build panel, lines and trains panel, toasts and the game-over screen. It calls Game
- * actions and Renderer methods; nothing calls into it except update().
+ * As few buttons and as few numbers as possible; a new player must understand it without
+ * reading instructions. The UI starts the game by itself on load (calls game.start()), and owns:
+ *   - one small gold readout: gold, and what the next payday will bring, with its countdown;
+ *   - one goal line (state.goal): what to do now, how, and the reward;
+ *   - the passenger queue, collapsed to a count until opened;
+ *   - a slim station card (title, photo, a line or two of text, a search box for other links);
+ *   - the one-button build card; the passenger card; toasts; the game-over screen;
+ *   - sound effects.
+ * It calls Game actions and Renderer methods; nothing calls into it except update().
  * @typedef {Object} UI
  * @property {(dt: number) => void} update   real seconds; refresh live numbers
  */

@@ -1,6 +1,6 @@
-// Full-window screens: the start screen and the game-over screen.
+// Full-window states: the automatic start (loading / error) and the game-over screen.
 import { h, clear } from './dom.js';
-import { fmtInt, fmtClock } from './format.js';
+import { fmtInt, fmtDuration } from './format.js';
 
 export function createScreens(ctx) {
   const { game, state } = ctx;
@@ -12,6 +12,7 @@ export function createScreens(ctx) {
 
   const isOver = () => state.phase === 'over' || state.phase === 'gameOver';
 
+  /** Start the game. Called once on load, and again by "Try again". */
   function begin() {
     if (starting) return;
     starting = true;
@@ -36,38 +37,28 @@ export function createScreens(ctx) {
     );
   }
 
-  function startScreen(loading) {
-    const body = [
-      h('div', { class: 'tot-start-sign' },
-        h('span', { class: 'tot-start-dot' }),
-        h('h1', { text: 'Train of Thought' })),
-      h('p', { class: 'tot-pitch', text: 'Every station is a Wikipedia article, and track can only follow a real link. Work out the path between ideas, build the line, and keep the trains paid before inflation catches up.' }),
-    ];
+  function startPanel(loading) {
     if (error) {
-      body.push(h('p', { class: 'tot-note bad', role: 'alert', text: error }));
-      body.push(h('button', { class: 'tot-btn tot-btn-primary tot-btn-big', type: 'button', text: 'Try again', onClick: begin }));
-    } else if (loading) {
-      body.push(h('div', { class: 'tot-loading' }, h('span', { class: 'tot-spinner' }), h('span', { text: 'Choosing a random article…' })));
-    } else {
-      body.push(h('button', { class: 'tot-btn tot-btn-primary tot-btn-big', type: 'button', text: 'Depart', onClick: begin }));
+      return h('div', { class: 'tot-center' }, h('div', { class: 'tot-panel tot-loadpanel' },
+        h('p', { class: 'tot-note bad', role: 'alert', text: error }),
+        h('button', { class: 'tot-btn tot-btn-primary', type: 'button', text: 'Try again', onClick: begin })));
     }
-    return h('div', { class: 'tot-overlay' }, h('div', { class: 'tot-panel tot-start' }, body));
+    return h('div', { class: 'tot-center' }, h('div', { class: 'tot-panel tot-loadpanel' },
+      h('div', { class: 'tot-loading' }, h('span', { class: 'tot-spinner' }), h('span', { text: loading ? 'Finding a starting article\u2026' : 'Train of Thought' }))));
   }
 
   function overScreen() {
-    const d = over || {
-      score: state.score, time: state.time, delivered: state.delivered, stations: state.stations.size,
-    };
+    const d = over || { score: state.score, time: state.time, delivered: state.delivered, stations: state.stations.size };
     const stat = (k, v) => h('div', { class: 'tot-over-stat' }, h('span', { class: 'tot-k', text: k }), h('b', { text: v }));
     return h('div', { class: 'tot-overlay' },
       h('div', { class: 'tot-panel tot-start tot-over' },
-        h('div', { class: 'tot-eyebrow', text: 'Service terminated' }),
-        h('h1', { text: 'Bankrupt' }),
-        h('div', { class: 'tot-over-score' }, h('span', { class: 'tot-k', text: 'Score' }), h('b', { text: fmtInt(d.score) })),
+        h('h1', { text: 'Game over' }),
+        h('p', { class: 'tot-note', text: 'You ran out of gold.' }),
         h('div', { class: 'tot-over-stats' },
-          stat('Time survived', fmtClock(d.time)),
-          stat('Thoughts delivered', fmtInt(d.delivered)),
-          stat('Stations', fmtInt(d.stations))),
+          stat('Time survived', fmtDuration(d.time)),
+          stat('Passengers delivered', fmtInt(d.delivered)),
+          stat('Stations', fmtInt(d.stations)),
+          stat('Score', fmtInt(d.score))),
         h('button', { class: 'tot-btn tot-btn-primary tot-btn-big', type: 'button', text: 'New run', onClick: () => location.reload() })));
   }
 
@@ -79,7 +70,7 @@ export function createScreens(ctx) {
     shownKey = key;
     clear(el);
     if (key.startsWith('over')) el.append(overScreen());
-    else if (key.startsWith('start')) el.append(startScreen(loading));
+    else if (key.startsWith('start')) el.append(startPanel(loading));
   }
 
   function onGameOver(payload) {
@@ -87,5 +78,5 @@ export function createScreens(ctx) {
     render(true);
   }
 
-  return { el, render, onGameOver };
+  return { el, render, begin, onGameOver };
 }

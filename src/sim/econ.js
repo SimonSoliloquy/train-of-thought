@@ -72,3 +72,13 @@ export function reputationAfterDelivery(rep, patienceFrac) {
 export function reputationAfterLoss(rep) {
   return clamp01(rep - ECON.reputationPerLost);
 }
+
+/** Fare multiplier for a delivery made after `streak` earlier deliveries in a row. */
+export function streakFareMult(streak) {
+  return 1 + Math.min(ECON.streakFareMax, ECON.streakFarePerStep * Math.max(0, streak));
+}
+
+/** Gold paid at once for one waiting passenger when their destination is built. */
+export function routeBonusFor(fare) {
+  return ECON.routeBonusFraction * fare;
+}

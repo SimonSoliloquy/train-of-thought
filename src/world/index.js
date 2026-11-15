@@ -20,9 +20,10 @@ function seedToInt(seed) {
  */
 export function createWorld({ seed } = {}) {
   const terrain = createTerrain(seedToInt(seed));
-  const layout = createLayout(terrain);
   const trackHexes = new Map(); // tileKey -> number of committed routes over the hex
-  const router = createRouter(terrain, layout.stationAt, trackHexes);
+  const layout = createLayout(terrain, (q, r) => trackHexes.has(tileKey(q, r)));
+  // Only built stations block track; unbuilt reservations are invisible and move off new track.
+  const router = createRouter(terrain, layout.builtAt, trackHexes);
   const revealed = new Map(); // tileKey -> Tile, in reveal order
 
   function reveal(q, r, radius, out) {
@@ -53,8 +54,13 @@ export function createWorld({ seed } = {}) {
     placeGhosts(parentTitle, titles) {
       const placements = layout.placeGhosts(parentTitle, titles);
       const out = [];
-      for (const p of placements) reveal(p.q, p.r, WORLD.revealGhost, out);
+      // revealGhost < 0: unbuilt links reveal nothing (nothing shows in the fog)
+      if (WORLD.revealGhost >= 0) for (const p of placements) reveal(p.q, p.r, WORLD.revealGhost, out);
       return { placements, revealed: out };
+    },
+
+    noteLinks(title, links) {
+      layout.noteLinks(title, links);
     },
 
     setBuilt(title) {
@@ -76,6 +82,9 @@ export function createWorld({ seed } = {}) {
         trackHexes.set(k, (trackHexes.get(k) || 0) + 1);
       }
       for (const h of route.hexes) reveal(h.q, h.r, WORLD.revealTrack, out);
+      // reservations (other than the route's own ends) never sit on track
+      const ends = new Set([route.from, route.to]);
+      layout.clearHexes(route.hexes.filter((h) => !ends.has(layout.stationAt(h.q, h.r))));
       return { revealed: out };
     },
 

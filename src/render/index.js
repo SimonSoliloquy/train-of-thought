@@ -3,16 +3,25 @@
 import * as THREE from 'three';
 import { SKY } from './palette.js';
 import { createSharedUniforms, createMaterials, createSkyMaterial, addMist } from './materials.js';
-import { Terrain, buildCloudGeometry } from './terrain.js';
+import { Terrain, buildCloudGeometry, REVEAL_DUR } from './terrain.js';
 import { StationsView } from './stations.js';
 import { TracksView } from './tracks-view.js';
 import { TrainsView, disposeTrainGeometries } from './trains.js';
 import { Particles, DynamicInstances } from './dynamic.js';
 import { LabelLayer } from './labels.js';
 import { CameraRig } from './camera.js';
+import { UpgradeTags } from './upgrades.js';
 import { hexToWorld, worldToHex, hexKey, mulberry32 } from '../hex.js';
+import { TRAIN_TYPES } from '../config.js';
 
 const SUN_DIR = new THREE.Vector3(0.55, 0.78, 0.32).normalize();
+
+/** How the rising "+$N" looks for a delivery at a given streak: "×3" shown from 2, growing a little. Pure. */
+export function deliveryFloat(streak) {
+  const s = Number.isFinite(streak) ? Math.floor(streak) : 0;
+  if (s < 2) return {};
+  return { streak: ` \u00d7${s}`, scale: 1 + Math.min(0.55, (s - 1) * 0.07), rise: 0.9 + Math.min(0.5, s * 0.04) };
+}
 
 /**
  * @param {{container: HTMLElement, game: import('../types.js').Game, world: import('../types.js').World}} opts
@@ -50,7 +59,7 @@ export function createRenderer({ container, game, world }) {
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 1600);
 
   const uniforms = createSharedUniforms();
-  const materials = createMaterials(uniforms);
+  const materials = createMaterials(uniforms, REVEAL_DUR);
 
   // sky dome + mist sea
   const sky = new THREE.Mesh(new THREE.SphereGeometry(1000, 32, 16), createSkyMaterial(SUN_DIR));
@@ -87,8 +96,15 @@ export function createRenderer({ container, game, world }) {
   const terrain = new Terrain({ parent: world3d, materials, world });
   const smoke = new Particles(world3d, new THREE.IcosahedronGeometry(1, 0), materials.smoke, { kind: 'smoke', capacity: 256, renderOrder: 8 });
   const sparkles = new Particles(world3d, new THREE.OctahedronGeometry(1, 0), materials.sparkle, { kind: 'sparkle', capacity: 256, renderOrder: 9 });
+  // confetti: solid (not additive) paper flakes, so the colours stay bright over pale ground
+  const confettiMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, toneMapped: false });
+  const confettiGeom = new THREE.PlaneGeometry(1, 0.55);
+  const confettiFx = new Particles(world3d, confettiGeom, confettiMat, { kind: 'sparkle', capacity: 256, renderOrder: 9 });
+  const pickHandlers = new Set();
+  const emitPick = (pick) => { for (const h of [...pickHandlers]) safe('pick handler', () => h(pick)); };
   const stations = new StationsView({
-    parent: world3d, materials, world, labels,
+    parent: world3d, materials, world, labels, terrain, game,
+    onSignClick: (title) => emitPick({ kind: 'ghost', title }),
     onBuiltFx: (x, y, z) => {
       sparkles.burst(x, y + 0.3, z, 26, '#fff0b8', { speed: 1.0, up: 1.6 });
       for (let i = 0; i < 10; i++) {
@@ -98,6 +114,7 @@ export function createRenderer({ container, game, world }) {
     },
   });
   stations.blockFn = (circles) => terrain.block(circles);
+  stations.isClear = (x, z) => terrain.isClear(x, z);
   const tracks = new TracksView({
     parent: world3d, materials, terrain,
     fx: (x, y, z, kind) => {
@@ -106,9 +123,27 @@ export function createRenderer({ container, game, world }) {
   });
   const trains = new TrainsView({
     parent: world3d, materials, smoke,
+    // hide cars exactly where the drawn track goes underground, for the whole tunnel
+    buriedAt: (trackId, s) => tracks.buriedAt(trackId, s),
     groundAt: (x, z) => terrain.groundAt(x, z),
+    naturalAt: (x, z) => terrain.naturalAt(x, z),
     makePaintMaterial: () => addMist(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }), uniforms),
+    // a track's train was replaced by an upgrade: a little flourish where it stood
+    onTypeChange: (x, y, z, typeId) => {
+      sparkles.burst(x, y + 0.25, z, 30, TRAIN_TYPES[typeId] ? TRAIN_TYPES[typeId].color : '#ffe08a', { speed: 1.1, up: 1.7, life: 0.9 });
+      sparkles.burst(x, y + 0.25, z, 14, '#fff2b0', { speed: 0.7, up: 2.0, life: 0.8 });
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        smoke.emit(x + Math.cos(a) * 0.2, y + 0.05, z + Math.sin(a) * 0.2, 1, { vx: Math.cos(a) * 0.45, vz: Math.sin(a) * 0.45, vy: 0.15, size: 0.07, grow: 0.1, life: 0.7 });
+      }
+    },
   });
+  const upgrades = new UpgradeTags({
+    game, labels,
+    groundAt: (x, z) => terrain.groundAt(x, z),
+    onClick: (trackId, typeId) => emitPick({ kind: 'upgrade', trackId, typeId }),
+  });
+  terrain.onChange = (box) => tracks.terrainChanged(box);
   const rig = new CameraRig(camera, canvas);
 
   // ambient clouds drifting over the unrevealed void
@@ -143,9 +178,7 @@ export function createRenderer({ container, game, world }) {
   }
 
   // ------------------------------------------------------------ state
-  const pickHandlers = new Set();
   let selection = null;
-  let lineHighlight = null;
   let lastAction = null; // {x, z, at}
   let clock = 0;
   let reconcileT = 0;
@@ -198,7 +231,6 @@ export function createRenderer({ container, game, world }) {
     });
     safe('reconcile stations', () => stations.sync(S(), animate));
     safe('reconcile tracks', () => tracks.sync(S().tracks, animate));
-    safe('reconcile highlight', () => tracks.setHighlight(lineHighlight, S()));
   }
 
   // initial draw: whatever is already there, without animation
@@ -235,18 +267,77 @@ export function createRenderer({ container, game, world }) {
       markAction(p.track.from);
       tracks.add(p.track, true);
       stations.sync(S(), false);
-      tracks.setHighlight(lineHighlight, S());
+      upgrades.refresh();
     }
   });
-  on('linesChanged', () => { tracks.highlight.key = '__dirty'; tracks.setHighlight(lineHighlight, S()); });
-  on('trainsChanged', () => {});
+  on('trackUpgraded', () => upgrades.refresh());
+  on('trainsChanged', () => upgrades.refresh());
   on('thoughtDelivered', (p) => {
     const pos = placementPos(p.station);
-    if (pos) {
-      sparkles.burst(pos.x, pos.y + 0.55, pos.z, 18, '#ffd966', { speed: 0.7, up: 1.4, life: 0.8 });
-      sparkles.burst(pos.x, pos.y + 0.55, pos.z, 8, '#9ff3ff', { speed: 0.5, up: 1.8, life: 0.7 });
+    if (!pos) return;
+    const streak = Number.isFinite(p.streak) ? Math.floor(p.streak) : 0;
+    if (Number.isFinite(p.fare) && p.fare > 0) {
+      labels.floatText(pos.x, pos.y + 1.15, pos.z, `+${money(p.fare)}`, deliveryFloat(streak));
+    }
+    const extra = Math.min(16, Math.max(0, streak - 1) * 2);
+    sparkles.burst(pos.x, pos.y + 0.55, pos.z, 18 + extra, '#ffd966', { speed: 0.7, up: 1.4, life: 0.8 });
+    sparkles.burst(pos.x, pos.y + 0.55, pos.z, 8 + extra / 2, '#9ff3ff', { speed: 0.5, up: 1.8, life: 0.7 });
+  });
+  on('routeBonus', (p) => {
+    const pos = placementPos(p.station);
+    if (!pos) return;
+    if (Number.isFinite(p.amount) && p.amount > 0) {
+      const who = Number.isFinite(p.count) && p.count > 0 ? `${p.count} passenger${p.count === 1 ? '' : 's'} can travel` : '';
+      labels.floatText(pos.x, pos.y + 1.4, pos.z, `+${money(p.amount)} route opened`, { cls: 'big', dur: 2.6, rise: 1.3, pop: true, sub: who });
+    }
+    sparkles.burst(pos.x, pos.y + 0.6, pos.z, 46, '#ffd23f', { speed: 1.4, up: 2.4, life: 1.2, size: 0.06 });
+    sparkles.burst(pos.x, pos.y + 0.6, pos.z, 22, '#fff6c8', { speed: 0.9, up: 3.0, life: 1.1 });
+    ring(pos.x, pos.y + 0.1, pos.z, '#ffd23f', 20);
+  });
+  on('goalDone', (p) => {
+    // a celebration where the player is looking
+    const t = rig.followId != null && rig.chase ? rig.chase.look : rig.target;
+    const x = t.x, z = t.z;
+    const y = Math.max(t.y, safe('goal ground', () => terrain.groundAt(x, z)) ?? t.y);
+    // several goals met at once stack their banners instead of printing over each other
+    goalStack = clock - lastGoalAt < 2.5 ? goalStack + 1 : 0;
+    lastGoalAt = clock;
+    if (goalStack === 0) confetti(x, y + 1.6, z);
+    const reward = Number.isFinite(p.reward) && p.reward > 0 ? `+${money(p.reward)}` : '';
+    const what = p.goal && p.goal.text ? p.goal.text : '';
+    labels.floatText(x, y + 1.9 + goalStack * 0.75, z, 'Goal complete!', { cls: 'goal', dur: 3.0, rise: 1.0, pop: true, sub: [what, reward].filter(Boolean).join(' \u00b7 ') });
+  });
+  on('payday', (p) => {
+    upgrades.refresh();
+    if (!(Number.isFinite(p.amount) && p.amount > 0)) return;
+    // a little coin sparkle at every station a train stops at (kept cheap: a few particles each)
+    const served = new Set();
+    for (const tr of S().tracks || []) if (tr && tr.level > 0) { served.add(tr.from); served.add(tr.to); }
+    let n = 0;
+    for (const title of served) {
+      if (n++ >= 40) break;
+      const pos = stations.positionOf(title);
+      if (pos) sparkles.burst(pos.x, pos.y + 0.7, pos.z, 5, '#ffd23f', { speed: 0.35, up: 1.3, life: 0.6, size: 0.035 });
     }
   });
+
+  let goalStack = 0, lastGoalAt = -1e9;
+  function money(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
+
+  /** Confetti: many colours, thrown up, falling slowly. */
+  function confetti(x, y, z) {
+    const cols = ['#ff5e7e', '#ffd23f', '#3fd2ff', '#7dff6a', '#c08bff', '#ffffff', '#ff9f43'];
+    for (const c of cols) confettiFx.burst(x, y, z, 16, c, { speed: 2.0, up: 3.4, life: 2.4, size: 0.09, gravity: 2.6 });
+    sparkles.burst(x, y, z, 30, '#fff2b0', { speed: 1.6, up: 2.6, life: 1.2, size: 0.05 });
+    for (let i = 0; i < 3; i++) ring(x, y - 1.2, z, cols[i], 16);
+  }
+  /** A flat ring of sparkles spreading out along the ground. */
+  function ring(x, y, z, color, n) {
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      sparkles.emit(x, y, z, 1, { vx: Math.cos(a) * 2.0, vz: Math.sin(a) * 2.0, vy: 0.5, size: 0.05, life: 0.7, color, gravity: 0.8 });
+    }
+  }
 
   // ------------------------------------------------------------ picking & hover
   const raycaster = new THREE.Raycaster();
@@ -272,6 +363,21 @@ export function createRenderer({ container, game, world }) {
       if (score < bestScore) { bestScore = score; best = pick; }
     };
     for (const t of trains.pickables()) consider(t, 0.4, { kind: 'train', trainId: t.trainId });
+    for (const g of upgrades.pickables()) {
+      _c.set(g.x, g.y, g.z);
+      const before = best;
+      consider(g, g.r, { kind: 'upgrade', trackId: g.trackId, typeId: g.options[0].typeId });
+      if (best !== before && g.options.length > 1) {
+        // which chip: the one under the pointer, else left/right of the tag's centre
+        const chip = labels.tagChipAt(`tag:${g.trackId}`, clientX, clientY);
+        if (chip) best.typeId = chip;
+        else {
+          const v = new THREE.Vector3(g.x, g.y, g.z).project(camera);
+          const sx = rect.left + (v.x * 0.5 + 0.5) * rect.width;
+          best.typeId = clientX < sx ? g.options[0].typeId : g.options[1].typeId;
+        }
+      }
+    }
     for (const s of stations.pickables()) consider(s, s.r, { kind: s.kind, title: s.title });
     // passengers are small, so they only win when the click is right on them
     for (const p of stations.passengerPickables()) consider(p, 0.16, { kind: 'thought', thoughtId: p.thoughtId });
@@ -293,8 +399,7 @@ export function createRenderer({ container, game, world }) {
     down = null;
     if (!d || d.moved || d.button !== 0) return;
     if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5) return;
-    const pick = pickAt(e.clientX, e.clientY);
-    for (const h of [...pickHandlers]) safe('pick handler', () => h(pick));
+    emitPick(pickAt(e.clientX, e.clientY));
   };
   const onPointerLeave = () => { hoverPt = null; setHover(null); };
   const onWheel = () => { if (rig.followId != null) rig.stopFollow(true); };
@@ -305,10 +410,13 @@ export function createRenderer({ container, game, world }) {
   canvas.addEventListener('wheel', onWheel, { passive: true });
 
   let hoverKey = null;
+  let tagHover3d = false;
   function setHover(pick) {
     const title = pick && (pick.kind === 'station' || pick.kind === 'ghost') ? pick.title : null;
     stations.hover = title;
-    const key = pick && pick.kind !== 'none' ? (pick.title || (pick.kind === 'thought' ? `p${pick.thoughtId}` : `t${pick.trainId}`)) : null;
+    if (pick && pick.kind === 'upgrade') { upgrades.hover = { trackId: pick.trackId, typeId: pick.typeId }; tagHover3d = true; }
+    else if (tagHover3d) { upgrades.hover = null; tagHover3d = false; }
+    const key = pick && pick.kind !== 'none' ? (pick.title || (pick.kind === 'thought' ? `p${pick.thoughtId}` : pick.kind === 'upgrade' ? `u${pick.trackId}:${pick.typeId}` : `t${pick.trainId}`)) : null;
     if (key !== hoverKey) {
       hoverKey = key;
       canvas.style.cursor = key ? 'pointer' : '';
@@ -370,7 +478,8 @@ export function createRenderer({ container, game, world }) {
     safe('tracks', () => tracks.update(dt));
     safe('trains', () => trains.update(S(), dt));
     safe('stations', () => stations.update(dt, S()));
-    safe('particles', () => { smoke.update(dt); sparkles.update(dt); });
+    safe('upgrades', () => { upgrades.update(dt, S()); tracks.setGlow(upgrades.glowWanted()); });
+    safe('particles', () => { smoke.update(dt); sparkles.update(dt); confettiFx.update(dt); });
     safe('ambient', () => updateAmbient(dt));
 
     hoverT -= dt;
@@ -416,10 +525,6 @@ export function createRenderer({ container, game, world }) {
     setRoutePreview(routes, activeStyle) {
       safe('route preview', () => tracks.setPreview(routes || null, activeStyle));
     },
-    setLineHighlight(lineId) {
-      lineHighlight = lineId == null ? null : lineId;
-      safe('line highlight', () => tracks.setHighlight(lineHighlight, S()));
-    },
     focus(title) {
       const p = placementPos(title);
       if (p) rig.focus(p);
@@ -443,11 +548,13 @@ export function createRenderer({ container, game, world }) {
       rig.dispose();
       trains.dispose();
       disposeTrainGeometries();
+      upgrades.dispose();
       tracks.dispose();
       stations.dispose();
       terrain.dispose();
       smoke.dispose();
       sparkles.dispose();
+      confettiFx.dispose(); confettiGeom.dispose(); confettiMat.dispose();
       ambient.dispose();
       ambientGeom.dispose();
       labels.dispose();
@@ -458,6 +565,6 @@ export function createRenderer({ container, game, world }) {
       canvas.remove();
     },
     // not part of the contract: handy for debugging from the console
-    _debug: { scene, camera, renderer, terrain, stations, tracks, trains, rig, hexKey },
+    _debug: { scene, camera, renderer, terrain, stations, tracks, trains, upgrades, labels, rig, hexKey },
   };
 }

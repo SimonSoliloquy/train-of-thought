@@ -3,7 +3,6 @@
 import * as THREE from 'three';
 import { MeshBuilder, shade } from './builder.js';
 import { hexToWorld, hashString } from '../hex.js';
-import { InstancePool } from './pool.js';
 import { DynamicInstances } from './dynamic.js';
 import { BUBBLE_COLORS } from './palette.js';
 import { easeOutBack } from './terrain.js';
@@ -109,6 +108,65 @@ export function buildStationBuilder(title, popularity = 0.5) {
   return b;
 }
 
+/** A wooden signpost: post at the origin, arrow board pointing along local +x. Pure. */
+export function signpostBuilder() {
+  const b = new MeshBuilder();
+  b.box(0, 0.36, 0, 0.055, 0.72, 0.055, '#6b4a30');
+  b.prism(0, 0, 0, 0.06, 0.045, 0.06, 5, '#8a6a46');
+  // arrow board
+  const y0 = 0.5, y1 = 0.7, z = 0.035;
+  b.box(0.25, (y0 + y1) / 2, 0, 0.5, y1 - y0, z * 2, '#f4e6c2', 0, { side: '#c9b48a' });
+  const tip = [0.66, (y0 + y1) / 2], t0 = [0.5, y0 - 0.03], t1 = [0.5, y1 + 0.03];
+  for (const zz of [-z, z]) b.tri([t0[0], t0[1], zz], [tip[0], tip[1], zz], [t1[0], t1[1], zz], '#f4e6c2');
+  b.quad([t0[0], t0[1], -z], [tip[0], tip[1], -z], [tip[0], tip[1], z], [t0[0], t0[1], z], '#c9b48a');
+  b.quad([tip[0], tip[1], -z], [t1[0], t1[1], -z], [t1[0], t1[1], z], [tip[0], tip[1], z], '#c9b48a');
+  // painted stripe
+  b.box(0.27, (y0 + y1) / 2, 0, 0.36, 0.035, z * 2 + 0.004, '#b8452f');
+  b.prism(0, 0.72, 0, 0.04, 0.0, 0.06, 4, '#5a3c26');
+  return b;
+}
+
+/**
+ * Unbuilt links of a built station that have a reserved spot: lead links first in reading
+ * order, then any other link that is a ghost placement. Pure.
+ */
+export function signpostLinks(station, placements, max = 10) {
+  const art = station && station.article;
+  if (!art || !placements || typeof placements.get !== 'function') return [];
+  const out = [], seen = new Set([station.title]);
+  for (const list of [art.leadLinks || [], art.links || []]) {
+    for (const t of list) {
+      if (out.length >= max) return out;
+      if (seen.has(t)) continue;
+      seen.add(t);
+      const pl = placements.get(t);
+      if (pl && pl.state === 'ghost' && Number.isFinite(pl.q) && Number.isFinite(pl.r)) out.push(t);
+    }
+  }
+  return out;
+}
+
+/**
+ * Signposts on a ring around (cx, cz): evenly spaced slots, assigned in order of the true
+ * bearing to each link's reserved spot, the ring turned to fit those bearings best. Pure.
+ * @param {{title:string, x:number, z:number}[]} targets
+ * @returns {{title:string, x:number, z:number, slot:number, bearing:number}[]}
+ */
+export function layoutSignposts(cx, cz, targets, radius = 2.5) {
+  const n = targets.length;
+  if (!n) return [];
+  const step = (Math.PI * 2) / n;
+  const items = targets.map((t) => ({ ...t, bearing: Math.atan2(t.z - cz, t.x - cx) }));
+  items.sort((a, b) => a.bearing - b.bearing);
+  let sx = 0, sy = 0;
+  items.forEach((it, k) => { const a = it.bearing - k * step; sx += Math.cos(a); sy += Math.sin(a); });
+  const base = n === 1 ? items[0].bearing : Math.atan2(sy, sx);
+  return items.map((it, k) => {
+    const slot = base + k * step;
+    return { title: it.title, bearing: it.bearing, slot, x: cx + Math.cos(slot) * radius, z: cz + Math.sin(slot) * radius };
+  });
+}
+
 function ghostRingBuilder() {
   const b = new MeshBuilder();
   const n = 6;
@@ -196,23 +254,63 @@ const _p = new THREE.Vector3();
 const _s = new THREE.Vector3();
 const _c = new THREE.Color();
 const _e = new THREE.Euler();
-const UP = new THREE.Vector3(0, 1, 0);
+
+export const SIGN_RING = 3.1;
+export const MAX_SIGNPOSTS = 10;
+export const SIGN_REQUERY = 1; // seconds between signpost price refreshes
+
+function money(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
+
+/**
+ * What each signpost round station `from` says: the price to build to that link
+ * (game.quoteBuild -> cheap.total; null when it cannot be quoted) and whether it is affordable,
+ * and how many passengers wait to go there with the sum of their fares. Pure.
+ * @returns {Map<string, {price:number|null, afford:boolean, waiting:number, fares:number}>}
+ */
+export function signpostInfo(game, from, titles, thoughts) {
+  const out = new Map();
+  const want = new Set(titles);
+  for (const t of titles) out.set(t, { price: null, afford: false, waiting: 0, fares: 0 });
+  for (const th of thoughts || []) {
+    if (!th || th.state !== 'waiting' || !want.has(th.to)) continue;
+    const o = out.get(th.to);
+    o.waiting++;
+    o.fares += Number.isFinite(th.fare) ? th.fare : 0;
+  }
+  if (game && typeof game.quoteBuild === 'function' && from) {
+    for (const t of titles) {
+      let q = null;
+      try { q = game.quoteBuild(from, t); } catch { q = null; }
+      const c = q && q.ok && q.cheap ? q.cheap : null;
+      if (c && Number.isFinite(c.total)) { const o = out.get(t); o.price = c.total; o.afford = !!c.affordable; }
+    }
+  }
+  return out;
+}
 
 export class StationsView {
-  constructor({ parent, materials, world, labels, onBuiltFx }) {
+  constructor({ parent, materials, world, labels, onBuiltFx, terrain, onSignClick, game }) {
+    this.game = game || null;
+    this.signInfo = new Map();  // title -> {price, afford, waiting, fares}: what each signpost says
+    this.signInfoT = 0;
+    this.signInfoKey = '';
     this.group = new THREE.Group();
     this.group.name = 'stations';
     parent.add(this.group);
     this.materials = materials;
     this.world = world;
     this.labels = labels;
+    this.terrain = terrain || null;
     this.onBuiltFx = onBuiltFx || null;
+    this.onSignClick = onSignClick || null;
     this.built = new Map();  // title -> {mesh, x, y, z, yaw, born, dirsKey}
-    this.ghosts = new Map(); // title -> {ring, beam, gem, x, y, z, born, phase}
+    this.signs = new Map();  // title -> {mesh, x, y, z, bearing, born}
+    this.signFor = null;     // station whose signposts are standing
     this.geoms = {
       ring: ghostRingBuilder().toGeometry(),
       beam: ghostBeamBuilder().toGeometry(),
       gem: gemBuilder().toGeometry(),
+      sign: signpostBuilder().toGeometry(),
       bubble: new THREE.IcosahedronGeometry(0.06, 1),
       personBody: personBodyBuilder().toGeometry(),
       personHead: personHeadBuilder().toGeometry(),
@@ -220,9 +318,17 @@ export class StationsView {
       select: ringBuilder(0.78, 0.9).toGeometry(),
       select2: ringBuilder(0.95, 0.99).toGeometry(),
     };
-    this.ringPool = new InstancePool(this.group, this.geoms.ring, materials.ghostSolid, { chunk: 256, castShadow: false, receiveShadow: false, name: 'ghost-ring', renderOrder: 4 });
-    this.gemPool = new InstancePool(this.group, this.geoms.gem, materials.ghostSolid, { chunk: 256, castShadow: false, receiveShadow: false, name: 'ghost-gem', renderOrder: 4 });
-    this.beamPool = new InstancePool(this.group, this.geoms.beam, materials.ghostBeam, { chunk: 256, castShadow: false, receiveShadow: false, name: 'ghost-beam', renderOrder: 5 });
+    // the one unbuilt placement ever drawn: the build target being priced
+    this.target = new THREE.Group();
+    this.target.name = 'build-target';
+    this.targetRing = new THREE.Mesh(this.geoms.ring, materials.ghostSolid);
+    this.targetBeam = new THREE.Mesh(this.geoms.beam, materials.ghostBeam);
+    this.targetGem = new THREE.Mesh(this.geoms.gem, materials.ghostSolid);
+    this.targetBeam.renderOrder = 5;
+    this.target.add(this.targetRing, this.targetBeam, this.targetGem);
+    this.target.visible = false;
+    this.group.add(this.target);
+    this.targetTitle = null;
     this.bubbles = new DynamicInstances(this.group, this.geoms.bubble, materials.bubble, 128);
     this.halos = new DynamicInstances(this.group, this.geoms.halo, materials.halo, 128, { renderOrder: 6 });
     this.people = new DynamicInstances(this.group, this.geoms.personBody, materials.station, 128, { castShadow: true });
@@ -239,21 +345,44 @@ export class StationsView {
     this.hover = null;
     this.time = 0;
     this.blockFn = null;
+    this.isClear = null; // (x, z) => boolean: no track there
+  }
+
+  _ground(x, z, fallback) {
+    if (this.terrain && typeof this.terrain.groundAt === 'function') {
+      const g = this.terrain.groundAt(x, z);
+      if (Number.isFinite(g)) return g;
+    }
+    return fallback;
   }
 
   _tileY(q, r) {
     let tile = null;
     try { tile = this.world && this.world.terrainAt ? this.world.terrainAt(q, r) : null; } catch { tile = null; }
     const e = tile && Number.isFinite(tile.elevation) ? tile.elevation : 0;
-    return tile && tile.water ? e - 0.1 : e;
+    return tile && tile.water ? e + 0.1 : e;
+  }
+
+  /** Unbuilt placements may move: always read them fresh. */
+  _placement(title) {
+    const pl = this.world && this.world.placements && typeof this.world.placements.get === 'function' ? this.world.placements.get(title) : null;
+    return pl && Number.isFinite(pl.q) && Number.isFinite(pl.r) ? pl : null;
+  }
+
+  _unbuiltPos(title) {
+    const pl = this._placement(title);
+    if (!pl || pl.state === 'built' || this.built.has(title)) return null;
+    const { x, z } = hexToWorld(pl.q, pl.r);
+    return { x, y: this._ground(x, z, this._tileY(pl.q, pl.r)), z };
   }
 
   positionOf(title) {
-    const s = this.built.get(title) || this.ghosts.get(title);
-    return s ? { x: s.x, y: s.y, z: s.z } : null;
+    const s = this.built.get(title);
+    if (s) return { x: s.x, y: s.y, z: s.z };
+    return this._unbuiltPos(title);
   }
 
-  /** Reconcile against game.state.stations and world.placements. */
+  /** Reconcile built stations against game.state.stations and world.placements. */
   sync(state, animate) {
     const stations = (state && state.stations) || new Map();
     const tracks = (state && state.tracks) || [];
@@ -265,7 +394,6 @@ export class StationsView {
       builtNow.add(title);
       if (!this.built.has(title)) this._addBuilt(title, st, stubs, tracks, animate);
     }
-    // placements marked built but not yet in state.stations still draw as built
     for (const [title, pl] of placements) {
       if (pl && pl.state === 'built' && !builtNow.has(title) && Number.isFinite(pl.q)) {
         builtNow.add(title);
@@ -273,15 +401,6 @@ export class StationsView {
       }
     }
     for (const title of [...this.built.keys()]) if (!builtNow.has(title)) this._removeBuilt(title);
-    const ghostNow = new Set();
-    let gi = 0;
-    for (const [title, pl] of placements) {
-      if (!pl || pl.state !== 'ghost' || builtNow.has(title) || !Number.isFinite(pl.q)) continue;
-      ghostNow.add(title);
-      if (!this.ghosts.has(title)) this._addGhost(title, pl, animate ? gi++ * 0.06 : null);
-    }
-    for (const title of [...this.ghosts.keys()]) if (!ghostNow.has(title)) this._removeGhost(title);
-    // orientation follows the tracks at each station
     for (const [title, s] of this.built) {
       const dirs = trackDirsAt(title, tracks);
       const key = dirs.map((d) => `${d[0].toFixed(2)},${d[1].toFixed(2)}`).join('|');
@@ -298,6 +417,7 @@ export class StationsView {
     const pop = stub && Number.isFinite(stub.popularity) ? stub.popularity : 0.5;
     const { x, z } = hexToWorld(st.q, st.r);
     const y = this._tileY(st.q, st.r);
+    if (this.terrain && this.terrain.setPad) this.terrain.setPad(title, x, z, y);
     const geom = buildStationBuilder(title, pop).toGeometry();
     const mesh = new THREE.Mesh(geom, this.materials.station);
     mesh.castShadow = true;
@@ -311,7 +431,7 @@ export class StationsView {
     this.group.add(mesh);
     const rec = { title, mesh, x, y, z, yaw, born: animate ? this.time : null, pop, dirsKey: dirs.map((d) => `${d[0].toFixed(2)},${d[1].toFixed(2)}`).join('|') };
     this.built.set(title, rec);
-    if (this.blockFn) this.blockFn([{ x, z, r: 0.9 }]);
+    if (this.blockFn) this.blockFn([{ x, z, r: 0.95 }]);
     if (animate && this.onBuiltFx) this.onBuiltFx(x, y, z);
   }
 
@@ -321,26 +441,8 @@ export class StationsView {
     this.group.remove(s.mesh);
     s.mesh.geometry.dispose();
     this.built.delete(title);
+    if (this.terrain && this.terrain.setPad) this.terrain.setPad(title, 0, 0, NaN);
     if (this.labels) this.labels.remove(`s:${title}`);
-  }
-
-  _addGhost(title, pl, delay) {
-    const { x, z } = hexToWorld(pl.q, pl.r);
-    const y = this._tileY(pl.q, pl.r);
-    const g = { title, x, y, z, born: delay == null ? null : this.time + delay, phase: (hashString(title) % 1000) / 159 };
-    g.ring = this.ringPool.add(_m.identity());
-    g.beam = this.beamPool.add(_m.identity());
-    g.gem = this.gemPool.add(_m.identity());
-    this.ghosts.set(title, g);
-    if (this.blockFn) this.blockFn([{ x, z, r: 0.45 }]);
-  }
-
-  _removeGhost(title) {
-    const g = this.ghosts.get(title);
-    if (!g) return;
-    this.ringPool.remove(g.ring); this.beamPool.remove(g.beam); this.gemPool.remove(g.gem);
-    this.ghosts.delete(title);
-    if (this.labels) this.labels.remove(`g:${title}`);
   }
 
   /** Waiting passengers the player can click, as drawn this frame. */
@@ -349,14 +451,143 @@ export class StationsView {
   pickables() {
     const out = [];
     for (const s of this.built.values()) out.push({ kind: 'station', title: s.title, x: s.x, y: s.y + 0.25, z: s.z, r: 0.85 });
-    for (const g of this.ghosts.values()) out.push({ kind: 'ghost', title: g.title, x: g.x, y: g.y + 0.5, z: g.z, r: 0.7 });
+    // signposts: generous proxies on the board and on the post
+    for (const g of this.signs.values()) {
+      out.push({ kind: 'ghost', title: g.title, x: g.x + Math.cos(g.bearing) * 0.25, y: g.y + 0.6, z: g.z + Math.sin(g.bearing) * 0.25, r: 0.6 });
+      out.push({ kind: 'ghost', title: g.title, x: g.x, y: g.y + 0.25, z: g.z, r: 0.45 });
+    }
     return out;
+  }
+
+  // ------------------------------------------------------------ signposts
+
+  _signTargets(state) {
+    const sel = this.selection;
+    if (!sel || !this.built.has(sel)) return null;
+    const st = state && state.stations && typeof state.stations.get === 'function' ? state.stations.get(sel) : null;
+    const placements = this.world && this.world.placements;
+    const titles = signpostLinks(st, placements, MAX_SIGNPOSTS).filter((t) => !this.built.has(t));
+    const out = [];
+    for (const t of titles) {
+      const pl = this._placement(t);
+      if (!pl) continue;
+      const w = hexToWorld(pl.q, pl.r);
+      out.push({ title: t, x: w.x, z: w.z });
+    }
+    return out;
+  }
+
+  /**
+   * Price and waiting passengers for each standing signpost. Re-asked about once a second, and
+   * at once when gold, the selection or the waiting crowd changes.
+   */
+  _refreshSignInfo(state, titles, dt) {
+    this.signInfoT -= dt;
+    const thoughts = (state && Array.isArray(state.thoughts)) ? state.thoughts : [];
+    const key = `${this.selection}|${state && state.money}|${titles.join('\u0001')}|${thoughts.length}`;
+    if (this.signInfoT > 0 && key === this.signInfoKey) return;
+    this.signInfoT = SIGN_REQUERY;
+    this.signInfoKey = key;
+    this.signInfo = signpostInfo(this.game, this.selection, titles, thoughts);
+  }
+
+  _updateSigns(state, dt = 0) {
+    const targets = this._signTargets(state);
+    const live = new Set();
+    if (targets && targets.length) {
+      const s = this.built.get(this.selection);
+      if (this.signFor !== this.selection) { this._clearSigns(); this.signFor = this.selection; this.signInfoT = 0; }
+      this._refreshSignInfo(state, targets.map((t) => t.title), dt);
+      const lay = layoutSignposts(s.x, s.z, targets, SIGN_RING);
+      // keep posts off the track: slide a blocked post further out (or in) along its slot
+      for (const L of lay) {
+        if (!this.isClear) break;
+        for (const r of [SIGN_RING, SIGN_RING + 0.55, SIGN_RING + 1.1, SIGN_RING - 0.5]) {
+          const x = s.x + Math.cos(L.slot) * r, z = s.z + Math.sin(L.slot) * r;
+          if (this.isClear(x, z)) { L.x = x; L.z = z; break; }
+        }
+      }
+      lay.forEach((L, k) => {
+        live.add(L.title);
+        let g = this.signs.get(L.title);
+        if (!g) {
+          const mesh = new THREE.Mesh(this.geoms.sign, this.materials.station);
+          mesh.castShadow = true;
+          this.group.add(mesh);
+          g = { title: L.title, mesh, born: this.time + k * 0.04 };
+          this.signs.set(L.title, g);
+        }
+        g.x = L.x; g.z = L.z; g.bearing = L.bearing;
+        g.y = this._ground(L.x, L.z, s.y);
+        const hov = this.hover === L.title;
+        const info = this.signInfo.get(L.title) || null;
+        const want = !!(info && info.waiting > 0);
+        g.want = want;
+        const p = Math.min(1, Math.max(0, (this.time - g.born) / 0.35));
+        const k2 = Math.max(0.001, easeOutBack(p)) * (hov ? 1.15 : want ? 1.08 : 1);
+        // wanted signposts hop gently and shine
+        const bob = want ? Math.abs(Math.sin(this.time * 3.2 + k * 0.7)) * 0.07 : 0;
+        g.mesh.position.set(g.x, g.y + bob, g.z);
+        g.mesh.rotation.set(0, -g.bearing, hov ? Math.sin(this.time * 9) * 0.04 : want ? Math.sin(this.time * 3.2 + k * 0.7) * 0.025 : 0);
+        g.mesh.scale.setScalar(k2 * 0.95);
+        g.mesh.material = (hov || want) ? this.materials.signHover || this.materials.station : this.materials.station;
+        if (this.labels) {
+          const key = `sign:${L.title}`;
+          this.labels.upsert(key, {
+            text: L.title, kind: 'sign', x: g.x, y: g.y + 0.9, z: g.z, priority: want ? 1.2e5 : 1e5, pinned: true, movable: true,
+            sub: info && info.price != null ? `Build ${money(info.price)}` : '',
+            subDim: !!(info && info.price != null && !info.afford),
+            badge: want ? `${info.waiting} waiting \u00b7 +${money(info.fares)}` : '',
+            want,
+            onClick: () => { if (this.onSignClick) this.onSignClick(L.title); },
+            onHover: (on) => { this.hover = on ? L.title : (this.hover === L.title ? null : this.hover); },
+          });
+          this.labels.setFlags(key, hov, false);
+        }
+      });
+    }
+    for (const t of [...this.signs.keys()]) if (!live.has(t)) this._removeSign(t);
+    if (!live.size) this.signFor = null;
+  }
+
+  _removeSign(title) {
+    const g = this.signs.get(title);
+    if (!g) return;
+    this.group.remove(g.mesh);
+    this.signs.delete(title);
+    if (this.labels) this.labels.remove(`sign:${title}`);
+  }
+
+  _clearSigns() { for (const t of [...this.signs.keys()]) this._removeSign(t); }
+
+  // ------------------------------------------------------------ the build target
+
+  _updateTarget(t) {
+    const title = this.selection;
+    const pos = title ? this._unbuiltPos(title) : null;
+    if (this.targetTitle && this.targetTitle !== (pos ? title : null) && this.labels) this.labels.remove(`g:${this.targetTitle}`);
+    if (!pos) { this.target.visible = false; this.targetTitle = null; return; }
+    if (this.targetTitle !== title) { this.targetTitle = title; this.targetBorn = t; }
+    const k = Math.max(0.001, easeOutBack(Math.min(1, (t - this.targetBorn) / 0.45)));
+    this.target.visible = true;
+    this.target.position.set(pos.x, pos.y, pos.z);
+    this.targetRing.position.y = 0.04;
+    this.targetRing.rotation.y = t * 0.25;
+    this.targetRing.scale.set(k, 1, k);
+    const pulse = 1 + Math.sin(t * 2.2) * 0.06;
+    this.targetBeam.scale.set(k * pulse, k, k * pulse);
+    this.targetGem.position.y = 0.95 + Math.sin(t * 1.8) * 0.07;
+    this.targetGem.rotation.y = t * 1.4;
+    this.targetGem.scale.setScalar(k);
+    if (this.labels) {
+      const key = `g:${title}`;
+      this.labels.upsert(key, { text: title, kind: 'ghost target', x: pos.x, y: pos.y + 1.3, z: pos.z, priority: 2e5, pinned: true });
+    }
   }
 
   update(dt, state) {
     this.time += dt;
     const t = this.time;
-    // station rise
     for (const s of this.built.values()) {
       if (s.born == null) continue;
       const p = Math.min(1, (t - s.born) / 0.65);
@@ -365,37 +596,14 @@ export class StationsView {
       s.mesh.scale.set(w, k * STATION_SCALE, w);
       if (p >= 1) { s.mesh.scale.setScalar(STATION_SCALE); s.born = null; }
     }
-    // ghosts: gentle bob and spin
-    for (const g of this.ghosts.values()) {
-      let k = 1;
-      if (g.born != null) {
-        const p = (t - g.born) / 0.45;
-        k = p <= 0 ? 0.0001 : Math.max(0.0001, easeOutBack(Math.min(1, p)));
-        if (p >= 1) g.born = null;
-      }
-      const hov = this.hover === g.title, sel = this.selection === g.title;
-      const hk = hov || sel ? 1.18 : 1;
-      _m.compose(_p.set(g.x, g.y + 0.025, g.z), _q.setFromAxisAngle(UP, t * 0.25 + g.phase), _s.set(k * hk, 1, k * hk));
-      this.ringPool.set(g.ring, _m);
-      const pulse = 1 + Math.sin(t * 2.2 + g.phase) * 0.06;
-      _m.compose(_p.set(g.x, g.y, g.z), _q.identity(), _s.set(k * pulse, k * (hov ? 1.15 : 1), k * pulse));
-      this.beamPool.set(g.beam, _m);
-      _e.set(0, t * 1.4 + g.phase, 0);
-      _m.compose(_p.set(g.x, g.y + 0.95 + Math.sin(t * 1.8 + g.phase) * 0.07, g.z), _q.setFromEuler(_e), _s.set(k * hk, k * hk, k * hk));
-      this.gemPool.set(g.gem, _m);
-      const col = hov ? [1, 0.86, 0.45] : sel ? [1, 0.9, 0.5] : [0.75, 0.9, 1];
-      this.ringPool.setColor(g.ring, _c.setRGB(col[0], col[1], col[2]));
-      this.gemPool.setColor(g.gem, _c.setRGB(col[0], col[1], col[2]));
-      this.beamPool.setColor(g.beam, _c.setRGB(col[0] * 0.45, col[1] * 0.45, col[2] * 0.5));
-    }
-    this.ringPool.flush(); this.beamPool.flush(); this.gemPool.flush();
+    this._updateTarget(t);
+    this._updateSigns(state, dt);
     this._bubbles(state, t);
-    // selection ring
     const sp = this.selection ? this.positionOf(this.selection) : null;
     if (sp) {
       this.selectMesh.visible = true;
       const k = 1 + Math.sin(t * 3) * 0.04;
-      this.selectMesh.position.set(sp.x, (this.built.get(this.selection) ? this.built.get(this.selection).y : sp.y) + 0.035, sp.z);
+      this.selectMesh.position.set(sp.x, sp.y + 0.035, sp.z);
       this.selectMesh.scale.set(k, 1, k);
       this.selectMesh.rotation.y = t * 0.4;
     } else this.selectMesh.visible = false;
@@ -491,27 +699,19 @@ export class StationsView {
   _labels(state) {
     if (!this.labels) return;
     const stations = (state && state.stations) || new Map();
-    const stubs = (state && state.stubs) || new Map();
     for (const s of this.built.values()) {
       const st = stations.get(s.title);
       const waiting = st && Array.isArray(st.waiting) ? st.waiting.length : 0;
       const key = `s:${s.title}`;
-      this.labels.upsert(key, { text: s.title, kind: 'built', x: s.x, y: s.y + 0.95, z: s.z, priority: 1000 + s.pop * 300 + waiting * 20, count: waiting });
+      this.labels.upsert(key, { text: s.title, kind: 'built', x: s.x, y: s.y + 0.95, z: s.z, priority: 1000 + s.pop * 300 + waiting * 20, count: waiting, pinned: this.selection === s.title });
       this.labels.setFlags(key, this.hover === s.title, this.selection === s.title);
-    }
-    for (const g of this.ghosts.values()) {
-      const stub = stubs.get(g.title);
-      const pop = stub && Number.isFinite(stub.popularity) ? stub.popularity : 0.3;
-      const key = `g:${g.title}`;
-      this.labels.upsert(key, { text: g.title, kind: 'ghost', x: g.x, y: g.y + 1.22, z: g.z, priority: 100 + pop * 300 });
-      this.labels.setFlags(key, this.hover === g.title, this.selection === g.title);
     }
   }
 
   dispose() {
     for (const t of [...this.built.keys()]) this._removeBuilt(t);
-    for (const t of [...this.ghosts.keys()]) this._removeGhost(t);
-    this.ringPool.dispose(); this.beamPool.dispose(); this.gemPool.dispose();
+    this._clearSigns();
+    if (this.labels && this.targetTitle) this.labels.remove(`g:${this.targetTitle}`);
     this.bubbles.dispose(); this.halos.dispose(); this.people.dispose(); this.heads.dispose();
     if (this.labels) for (const key of this.thoughtLabels) this.labels.remove(key);
     for (const g of Object.values(this.geoms)) g.dispose();

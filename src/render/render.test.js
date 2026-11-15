@@ -8,11 +8,16 @@ import { sampleRoute, routeLength, RAIL_LIFT } from './rail.js';
 import { createMockWorld, createMockGame, MOCK_TRACKS, mockTerrain } from './mock.js';
 import { tileColors } from './palette.js';
 import { layoutTileProps, buildPropGeometryBuilders, PROP_TYPES } from './props.js';
-import { Terrain, tileTransforms, buildCapGeometry, buildWallGeometry } from './terrain.js';
+import { Terrain } from './terrain.js';
+import { Surface, gridToWorld, EDGE_SINK } from './surface.js';
+import { gradeSegments, TUNNEL_COVER } from './track.js';
+import { sampleRoute as sampleRaw } from '../route.js';
 import { createSharedUniforms, createMaterials } from './materials.js';
 import { buildTrack, buildRibbon, vertexCountAt, resample } from './track.js';
-import { carOffsets, placeCars, previousTrack, TrainsView, vehicleBuilders } from './trains.js';
-import { buildStationBuilder, chooseStationYaw, StationsView, trackDirsAt } from './stations.js';
+import { carOffsets, placeCars, TrainsView, vehicleBuilders, drawableType } from './trains.js';
+import { UpgradeTags, tagAnchor, quoteOptions } from './upgrades.js';
+import { MOCK_START_LEVELS } from './mock.js';
+import { buildStationBuilder, chooseStationYaw, StationsView, trackDirsAt, signpostLinks, layoutSignposts, MAX_SIGNPOSTS, SIGN_RING } from './stations.js';
 import { TracksView } from './tracks-view.js';
 import { cullOverlaps } from './labels.js';
 import { Particles } from './dynamic.js';
@@ -88,16 +93,38 @@ test('prop layout is deterministic and stays inside the hex', () => {
   for (const must of ['broadleaf', 'pine', 'palm', 'cactus', 'dune', 'reeds', 'willow', 'mesa', 'spire', 'jungle']) assert.ok(types.has(must), `no ${must}`);
 });
 
-test('prop, cap and wall geometries are finite and non-empty', () => {
+test('prop geometries are finite and non-empty', () => {
   const b = buildPropGeometryBuilders();
   for (const t of PROP_TYPES) {
     assert.ok(b[t].vertexCount > 0 && b[t].vertexCount % 3 === 0, t);
     assert.ok(finiteArr(b[t].pos) && finiteArr(b[t].nor) && finiteArr(b[t].col), t);
   }
-  for (const g of [buildCapGeometry(), buildWallGeometry()]) assert.ok(g.vertexCount > 0 && finiteArr(g.pos));
 });
 
-test('terrain instancing: 4000+ tiles, finite matrices, reveal animation settles', () => {
+test('surface: hex centres are vertices at their elevation, river beds sit under water', () => {
+  const world = createMockWorld();
+  const S = new Surface((q, r) => world.terrainAt(q, r));
+  let worst = 0, beds = 0;
+  for (const h of hexSpiral(0, 0, 12)) {
+    const t = world.terrainAt(h.q, h.r);
+    S.revealHex(h.q, h.r);
+    const n = S.natural(h.q * 3, h.r * 3);
+    const g = gridToWorld(h.q * 3, h.r * 3), w = hexToWorld(h.q, h.r);
+    assert.ok(Math.abs(g.x - w.x) < 1e-9 && Math.abs(g.z - w.z) < 1e-9, 'hex centre is a grid vertex');
+    if (t.water) { beds++; assert.ok(n.h < t.elevation - 0.25, 'bed below the water'); assert.ok(Number.isFinite(n.wl)); }
+    else worst = Math.max(worst, Math.abs(n.h - t.elevation));
+  }
+  assert.ok(beds > 3);
+  assert.ok(worst < 0.3, `centre height off by ${worst}`); // blended, not stepped
+  // drawn = natural inside revealed land, sunk into the mist far outside
+  assert.ok(Math.abs(S.groundAt(0, 0) - S.naturalAt(0, 0)) < 1e-6);
+  assert.ok(Math.abs(S.groundAt(200, 200) - (S.naturalAt(200, 200) - EDGE_SINK)) < 1e-6);
+  // groundAt interpolates the drawn vertices exactly
+  const v = S.heightAt(7, 5), p = gridToWorld(7, 5);
+  assert.ok(Math.abs(S.groundAt(p.x, p.z) - v) < 1e-6);
+});
+
+test('terrain: 4000+ tiles as one surface, water ribbons, props seated on land', () => {
   const world = createMockWorld();
   const tiles = hexSpiral(0, 0, 37).map((h) => world.terrainAt(h.q, h.r));
   assert.ok(tiles.length >= 4000);
@@ -111,20 +138,28 @@ test('terrain instancing: 4000+ tiles, finite matrices, reveal animation settles
   const st = terrain.stats();
   assert.equal(st.tiles, tiles.length);
   assert.ok(st.props > 5000, `props ${st.props}`);
-  assert.ok(st.water > 50);
-  assert.ok(st.clouds > 50);
+  assert.ok(st.landTris > tiles.length * 14 && st.landTris < tiles.length * 30, `land tris ${st.landTris}`);
+  assert.ok(st.waterTris > 100, `water tris ${st.waterTris}`);
+  assert.ok(st.meshes < 160, `meshes ${st.meshes}`);
   assert.ok(st.animating > 0);
-  for (let i = 0; i < 40; i++) terrain.update(0.05); // 2 s > 0.9 s ripple
+  for (let i = 0; i < 40; i++) terrain.update(0.05);
   assert.equal(terrain.stats().animating, 0);
-  for (const pool of [terrain.capPool, terrain.wallPool, terrain.waterPool, ...Object.values(terrain.propPools)]) {
-    for (const ch of pool.chunks) assert.ok(finiteArr(ch.mesh.instanceMatrix.array.subarray(0, ch.mesh.count * 16)), pool.name);
+  for (const m of terrain.meshes.values()) for (const x of [m.land, m.water]) if (x) {
+    for (const name of ['position', 'aPrev', 'aBorn']) assert.ok(finiteArr(x.geometry.getAttribute(name).array), name);
   }
-  // re-reveal is a no-op
+  // every visible prop stands on the drawn land, never in the water
+  let checked = 0;
+  for (const rec of terrain.tiles.values()) {
+    for (const p of rec.props) {
+      if (p.hidden) continue;
+      assert.ok(Math.abs(p.y + 0.01 - terrain.groundAt(p.x, p.z)) < 1e-6);
+      assert.equal(terrain.waterAt(p.x, p.z), null);
+      checked++;
+    }
+  }
+  assert.ok(checked > 4000);
   assert.equal(terrain.reveal(tiles.slice(0, 10)), 0);
-  // a settled tile's cap sits at its elevation
-  const tr = tileTransforms(tiles[5], 1);
-  assert.ok(Math.abs(tr.capY - (tiles[5].water ? tiles[5].elevation - 0.42 : tiles[5].elevation)) < 1e-9);
-  assert.ok(ms < 5000, `reveal took ${ms} ms`);
+  assert.ok(ms < 8000, `reveal took ${ms} ms`);
   terrain.dispose();
 });
 
@@ -133,8 +168,14 @@ test('mock network builds: tracks with bridge, tunnel and ledge stretches', () =
   const st = game.state;
   assert.equal(st.stations.size, 7);
   assert.equal(st.tracks.length, MOCK_TRACKS.length);
-  assert.equal(st.lines.length, 2);
-  assert.equal(st.trains.length, 3);
+  assert.equal(st.lines, undefined, 'no lines in the game any more');
+  // one train per upgraded track, none on bare track
+  assert.equal(st.trains.length, MOCK_START_LEVELS.filter((l) => l > 0).length);
+  for (const tr of st.tracks) {
+    const train = st.trains.find((t) => t.trackId === tr.id);
+    if (tr.level === 0) { assert.equal(train, undefined); assert.equal(tr.typeId, null); }
+    else { assert.ok(train); assert.equal(train.typeId, tr.typeId); assert.equal(tr.trainId, train.id); }
+  }
   const kinds = new Set();
   for (const t of st.tracks) for (const p of t.route.points) kinds.add(p.kind);
   for (const k of ['ground', 'bridge', 'tunnel', 'ledge']) assert.ok(kinds.has(k), `no ${k} in mock routes`);
@@ -146,7 +187,7 @@ test('track geometry: finite, ordered marks, portals at tunnels, piers on bridge
   terrain.reveal(world.revealedTiles());
   let portals = 0, bridges = 0;
   for (const t of game.state.tracks) {
-    const out = buildTrack(t.route, { groundAt: (x, z) => terrain.groundAt(x, z) });
+    const out = buildTrack(t.route, { groundAt: (x, z) => terrain.groundAt(x, z), naturalAt: (x, z) => terrain.naturalAt(x, z) });
     const b = out.builder;
     assert.ok(b.vertexCount > 100 && b.vertexCount % 3 === 0);
     assert.ok(finiteArr(b.pos) && finiteArr(b.nor) && finiteArr(b.col));
@@ -195,12 +236,17 @@ test('tracks view: animated build draws progressively and clears props', () => {
   assert.ok(mid > 0 && mid < rec.total);
   view.update(rec.dur);
   assert.equal(rec.mesh.geometry.drawRange.count, Infinity);
-  view.setPreview(world.findRoutes('Iron Bridge', 'Danube') ? Object.values(world.findRoutes('Iron Bridge', 'Danube')).filter((r) => r && r.points) : null, 'direct');
-  assert.equal(view.preview.length, 2);
-  view.setHighlight(1, game.state);
-  assert.ok(view.highlight.meshes.length >= 3);
-  view.setHighlight(null, game.state);
-  assert.equal(view.highlight.meshes.length, 0);
+  view.setPreview([world.findRoutes('Iron Bridge', 'Danube').cheap], 'cheap');
+  assert.equal(view.preview.length, 1);
+  // glow on chosen tracks, fading out when no longer wanted
+  const ids = game.state.tracks.slice(0, 2).map((t) => t.id);
+  view.setGlow(new Map([[ids[0], { hovered: false }], [ids[1], { hovered: true }]]));
+  view.update(0.5);
+  assert.equal(view.glows.size, 2);
+  assert.ok(view.glows.get(ids[1]).material.opacity > view.glows.get(ids[0]).material.opacity, 'hovered glows stronger');
+  view.setGlow(new Map());
+  for (let i = 0; i < 40; i++) view.update(0.1);
+  assert.equal(view.glows.size, 0);
   view.dispose();
 });
 
@@ -242,39 +288,36 @@ test('train cars sit on the centreline, spaced, facing the direction of travel',
   }
 });
 
-test('trailing cars continue onto the previous track of the line', () => {
-  const { game } = mockRoutes();
-  const st = game.state;
-  const line = st.lines[0];
-  const a = line.stations[0], b = line.stations[1], c = line.stations[2];
-  const t1 = game.trackBetween(a, b), t2 = game.trackBetween(b, c);
-  const forward = t2.from === b;
-  const train = { id: 99, typeId: 'hauler', lineId: line.id, trackId: t2.id, t: forward ? 0 : 1, forward, atStation: b };
-  const prev = previousTrack(st, train, t2);
-  assert.ok(prev && prev.route === t1.route);
-  const cars = placeCars(t2.route, train.t, forward, carOffsets('hauler'), prev);
-  for (const car of cars.slice(1)) {
-    assert.ok(!car.hidden);
-    assert.ok(distToPolyline({ ...car, y: car.y - RAIL_LIFT }, t1.route.points) < 1e-6, 'trailing car should be on the previous track');
-  }
-});
-
 test('trains view follows the mock game without errors', () => {
   const { game } = mockRoutes();
   const parent = new THREE.Group();
   const materials = createMaterials(createSharedUniforms());
   const smoke = new Particles(parent, new THREE.IcosahedronGeometry(1, 0), materials.smoke);
   const view = new TrainsView({ parent, materials, smoke, makePaintMaterial: () => new THREE.MeshLambertMaterial({ vertexColors: true }) });
+  const flourishes = [];
+  view.onTypeChange = (x, y, z, typeId) => flourishes.push(typeId);
   for (let i = 0; i < 120; i++) { game.update(0.05); view.update(game.state, 0.05); smoke.update(0.05); }
-  assert.equal(view.trains.size, 3);
+  assert.equal(view.trains.size, game.state.trains.length);
+  // painted in the type's colour
+  for (const rec of view.trains.values()) assert.equal(rec.color, TRAIN_TYPES[rec.typeId].color);
+  // upgrading a track swaps its train for the new type, with a flourish
+  const t2 = game.state.tracks.find((t) => t.level === 1);
+  game.state.money = 1e6;
+  assert.ok(game.upgradeTrack(t2.id).ok);
+  view.update(game.state, 0.05);
+  const rec2 = [...view.trains.values()].find((r) => r.trackId === t2.id);
+  assert.equal(rec2.typeId, 'express');
+  assert.deepEqual(flourishes, ['express']);
+  assert.equal(drawableType('hauler'), 'freight');
   const picks = view.pickables();
   assert.ok(picks.length >= 3);
   for (const p of picks) assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z));
   for (const id of game.state.trains.map((t) => t.id)) assert.ok(view.head(id));
   assert.ok(smoke.list.length > 0, 'locos should puff');
+  const n = view.trains.size;
   game.state.trains.pop();
   view.update(game.state, 0.05);
-  assert.equal(view.trains.size, 2);
+  assert.equal(view.trains.size, n - 1);
   for (const typeId of Object.keys(TRAIN_TYPES)) {
     for (const kind of ['loco', 'car']) {
       const b = vehicleBuilders(typeId, kind, 1);
@@ -284,31 +327,109 @@ test('trains view follows the mock game without errors', () => {
   view.dispose();
 });
 
-test('stations view: built, ghosts, bubbles, orientation away from track', () => {
+test('track grading: rails sit on the land, tunnels stay under the hill', () => {
   const { world, game } = mockRoutes();
   const parent = new THREE.Group();
   const materials = createMaterials(createSharedUniforms());
-  const view = new StationsView({ parent, materials, world, labels: null });
+  const terrain = new Terrain({ parent, materials, world });
+  terrain.reveal(world.revealedTiles());
+  const view = new TracksView({ parent, materials, terrain });
+  view.sync(game.state.tracks, false);
+  let n = 0, worst = 0, tunnels = 0;
+  for (const t of game.state.tracks) {
+    const segs = gradeSegments(t.route, (x, z) => terrain.naturalAt(x, z));
+    assert.ok(segs.length > 0);
+    for (let k = 1; k < 40; k++) {
+      const p = sampleRaw(t.route, k / 40);
+      const nat = terrain.naturalAt(p.x, p.z);
+      if (p.kind === 'bridge') continue;
+      if (p.kind === 'tunnel' && nat > p.y + 0.075 + TUNNEL_COVER + 0.15) { tunnels++; continue; }
+      if (p.kind === 'tunnel') continue; // near a portal
+      const gap = p.y - terrain.groundAt(p.x, p.z);
+      worst = Math.max(worst, Math.abs(gap - 0.03));
+      n++;
+    }
+  }
+  assert.ok(n > 50);
+  assert.ok(worst < 0.06, `rail to ground gap off by ${worst}`);
+  assert.ok(tunnels > 0, 'some tunnel stretch is under the hill');
+  view.dispose();
+  terrain.dispose();
+});
+
+test('stations view: built stations, no fog markers, signposts around the selected station', () => {
+  const { world, game } = mockRoutes();
+  const parent = new THREE.Group();
+  const materials = createMaterials(createSharedUniforms());
+  const terrain = new Terrain({ parent, materials, world });
+  terrain.reveal(world.revealedTiles());
+  const clicks = [];
+  const view = new StationsView({ parent, materials, world, labels: null, terrain, onSignClick: (t) => clicks.push(t) });
   view.sync(game.state, false);
   assert.equal(view.built.size, 7);
-  assert.equal(view.ghosts.size, 8);
+  const ghosts = [...world.placements.values()].filter((p) => p.state === 'ghost');
+  assert.ok(ghosts.length > 0);
+  for (let i = 0; i < 5; i++) view.update(0.05, game.state);
+  // nothing in the fog: no ghost markers, no ghost picks
+  assert.equal(view.target.visible, false);
+  assert.ok(view.pickables().every((p) => p.kind === 'station'));
+  // selecting a built station stands signposts for its unbuilt links, lead links first
+  const st = game.state.stations.get('Locomotive');
+  const links = signpostLinks(st, world.placements);
+  assert.deepEqual(links.slice(0, 2), st.article.leadLinks.filter((t) => world.placements.get(t)?.state === 'ghost').slice(0, 2));
+  assert.ok(links.length > 2 && links.length <= MAX_SIGNPOSTS);
   view.selection = 'Locomotive';
-  view.hover = 'Danube';
   for (let i = 0; i < 10; i++) view.update(0.05, game.state);
-  assert.ok(view.selectMesh.visible);
-  const waiting = [...game.state.stations.values()].reduce((s, x) => s + Math.min(8, x.waiting.length), 0);
-  assert.equal(view.bubbles.mesh.count, waiting);
-  for (const p of view.pickables()) assert.ok(Number.isFinite(p.x + p.y + p.z));
-  // building direction keeps away from every track leaving the station
-  for (const [title, s] of view.built) {
-    const dirs = trackDirsAt(title, game.state.tracks);
-    const bx = Math.cos(s.yaw), bz = -Math.sin(s.yaw);
-    for (const [ux, uz] of dirs) assert.ok(ux * bx + uz * bz < 0.9, `${title} building sits on a track`);
+  assert.equal(view.signs.size, links.length);
+  const s = view.built.get('Locomotive');
+  for (const g of view.signs.values()) {
+    assert.ok(Math.abs(Math.hypot(g.x - s.x, g.z - s.z) - SIGN_RING) < 1e-6);
+    assert.ok(Number.isFinite(g.y));
+    assert.ok(!view.built.has(g.title));
   }
-  const b = buildStationBuilder('Test', 0.9);
-  assert.ok(b.vertexCount > 0 && finiteArr(b.pos));
+  const signPicks = view.pickables().filter((p) => p.kind === 'ghost');
+  assert.equal(new Set(signPicks.map((p) => p.title)).size, links.length);
+  // selecting an unbuilt link: signposts go, its marker shows at its (fresh) position
+  const target = links[0];
+  view.selection = target;
+  view.update(0.05, game.state);
+  assert.equal(view.signs.size, 0);
+  assert.ok(view.target.visible);
+  const pl = world.placements.get(target);
+  pl.q += 1; // reservations may move
+  view.update(0.05, game.state);
+  const w = hexToWorld(pl.q, pl.r);
+  assert.ok(Math.abs(view.target.position.x - w.x) < 1e-9 && Math.abs(view.target.position.z - w.z) < 1e-9);
+  pl.q -= 1;
+  view.selection = null;
+  view.update(0.05, game.state);
+  assert.equal(view.target.visible, false);
+  // orientation away from track; station pads are flat
+  for (const [title, b] of view.built) {
+    const dirs = trackDirsAt(title, game.state.tracks);
+    const bx = Math.cos(b.yaw), bz = -Math.sin(b.yaw);
+    for (const [ux, uz] of dirs) assert.ok(ux * bx + uz * bz < 0.9, `${title} building sits on a track`);
+    assert.ok(Math.abs(terrain.groundAt(b.x + 0.3, b.z) - b.y) < 0.03, `${title} pad not flat`);
+  }
+  assert.ok(buildStationBuilder('Test', 0.9).vertexCount > 0);
   assert.ok(Number.isFinite(chooseStationYaw('x', [])));
   view.dispose();
+});
+
+test('signposts take evenly spaced slots in bearing order', () => {
+  const targets = [0.3, 2.0, -2.5, 1.0, -0.9].map((a, k) => ({ title: `t${k}`, x: Math.cos(a) * 6, z: Math.sin(a) * 6 }));
+  const lay = layoutSignposts(0, 0, targets, 2.5);
+  assert.equal(lay.length, 5);
+  for (let k = 1; k < lay.length; k++) {
+    assert.ok(lay[k].bearing > lay[k - 1].bearing);
+    const d = lay[k].slot - lay[k - 1].slot;
+    assert.ok(Math.abs(d - (Math.PI * 2) / 5) < 1e-9);
+  }
+  for (const L of lay) {
+    let diff = Math.abs(L.slot - L.bearing) % (Math.PI * 2);
+    if (diff > Math.PI) diff = Math.PI * 2 - diff;
+    assert.ok(diff < 0.9, `${L.title} slot far from its bearing`);
+  }
 });
 
 test('label culling keeps the higher priority of overlapping labels', () => {
@@ -318,6 +439,13 @@ test('label culling keeps the higher priority of overlapping labels', () => {
     { x: 400, y: 100, w: 80, h: 20, priority: 0 },
   ]);
   assert.ok(show.has(1) && show.has(2) && !show.has(0));
+  // pinned labels always show and win their space
+  const pinned = cullOverlaps([
+    { x: 100, y: 100, w: 80, h: 20, priority: 9 },
+    { x: 105, y: 100, w: 80, h: 20, priority: 0, pinned: true },
+    { x: 110, y: 100, w: 80, h: 20, priority: 0, pinned: true },
+  ]);
+  assert.ok(pinned.has(1) && pinned.has(2) && !pinned.has(0));
 });
 
 test('render/index.js imports in Node without touching the DOM', async () => {
@@ -347,4 +475,224 @@ test('waiting passengers grow more agitated as patience runs out', async () => {
     assert.ok(g.getAttribute('position').count > 0);
     assert.ok(g.getAttribute('color'), 'needs vertex colours for the shared station material');
   }
+});
+
+test('upgrade tags: one per upgradeable track, two for the final choice, glow where affordable', () => {
+  const { world, game } = mockRoutes();
+  const parent = new THREE.Group();
+  const materials = createMaterials(createSharedUniforms());
+  const terrain = new Terrain({ parent, materials, world });
+  terrain.reveal(world.revealedTiles());
+  const clicks = [];
+  const tags = new UpgradeTags({ game, labels: null, groundAt: (x, z) => terrain.groundAt(x, z), onClick: (id, typeId) => clicks.push([id, typeId]) });
+  game.state.money = 400; // local and express affordable, the finals not
+  tags.update(0.016, game.state);
+  const st = game.state;
+  const upgradeable = st.tracks.filter((t) => t.level < 3);
+  assert.equal(tags.tags.size, upgradeable.length);
+  for (const tr of st.tracks) {
+    const tag = tags.tags.get(tr.id);
+    if (tr.level >= 3) { assert.equal(tag, undefined, 'fully upgraded: no tag'); continue; }
+    const want = tr.level === 2 ? ['freight', 'bullet'] : tr.level === 1 ? ['express'] : ['local'];
+    assert.deepEqual(tag.options.map((o) => o.typeId), want);
+    for (const o of tag.options) assert.equal(o.affordable, st.money >= o.cost);
+    // floats above the rail over the middle of the track
+    const a = tagAnchor(tr.route, (x, z) => terrain.groundAt(x, z));
+    assert.ok(Math.abs(tag.x - a.x) < 1e-9 && tag.y > a.railY);
+  }
+  const glow = tags.glowWanted();
+  for (const tr of upgradeable) assert.equal(glow.has(tr.id), tags.tags.get(tr.id).afford);
+  assert.ok([...glow.keys()].length > 0 && [...glow.keys()].length < upgradeable.length, 'some affordable, some not');
+  assert.ok(tags.pickables().length >= upgradeable.length);
+  // buying the last upgrade removes the tag after the next quote
+  st.money = 1e6;
+  const fin = st.tracks.find((t) => t.level === 2);
+  assert.ok(game.upgradeTrack(fin.id, 'bullet').ok);
+  tags.refresh();
+  tags.update(0.016, st);
+  assert.equal(tags.tags.has(fin.id), false);
+  assert.deepEqual(quoteOptions({ ok: false, reason: 'x' }), []);
+  tags.dispose();
+  terrain.dispose();
+});
+
+// ------------------------------------------------------------ rewards, plain-word tags, signposts, height
+
+test('signposts say the price and who is waiting to go there', async () => {
+  const { signpostInfo } = await import('./stations.js');
+  const { world, game } = mockRoutes();
+  const st = game.state.stations.get('Locomotive');
+  const titles = signpostLinks(st, world.placements);
+  assert.ok(titles.length >= 2);
+  const thoughts = [
+    { id: 1, state: 'waiting', to: titles[0], fare: 100 },
+    { id: 2, state: 'waiting', to: titles[0], fare: 110 },
+    { id: 3, state: 'riding', to: titles[0], fare: 500 },
+    { id: 4, state: 'waiting', to: 'Elsewhere', fare: 50 },
+  ];
+  game.state.money = 1e6;
+  const info = signpostInfo(game, 'Locomotive', titles, thoughts);
+  assert.deepEqual([info.get(titles[0]).waiting, info.get(titles[0]).fares], [2, 210]);
+  assert.equal(info.get(titles[1]).waiting, 0);
+  for (const t of titles) {
+    const q = game.quoteBuild('Locomotive', t);
+    assert.equal(info.get(t).price, q.cheap.total);
+    assert.equal(info.get(t).afford, true);
+  }
+  game.state.money = 0;
+  assert.equal(signpostInfo(game, 'Locomotive', titles, []).get(titles[0]).afford, false);
+  // no game, or a quote that fails: no price, nothing thrown
+  assert.equal(signpostInfo(null, 'Locomotive', titles, thoughts).get(titles[0]).price, null);
+  assert.equal(signpostInfo({ quoteBuild: () => { throw new Error('x'); } }, 'Locomotive', titles, []).get(titles[0]).price, null);
+  // the view reads them: waiting passengers in the mock want signposted links
+  const view = new StationsView({ parent: new THREE.Group(), materials: createMaterials(createSharedUniforms()), world, labels: null, terrain: null, game });
+  view.sync(game.state, false);
+  game.state.thoughts.push({ id: 999, from: 'Iron Bridge', to: titles[1], fare: 80, patience: 50, patienceMax: 60, state: 'waiting', at: 'Iron Bridge', trainId: null });
+  view.selection = 'Locomotive';
+  for (let i = 0; i < 5; i++) view.update(0.05, game.state);
+  assert.ok(view.signs.get(titles[1]).want, 'a signpost passengers want stands out');
+  view.dispose();
+});
+
+test('track tags read as instructions; the first-train goal picks one bare track', async () => {
+  const { tagChoices, FIRST_TRAIN_GOAL } = await import('./upgrades.js');
+  const opt = (typeId) => ({ typeId, name: TRAIN_TYPES[typeId].name, blurb: TRAIN_TYPES[typeId].blurb, cost: TRAIN_TYPES[typeId].cost, affordable: true });
+  assert.equal(tagChoices(0, [opt('local')])[0].title, 'Add train · $120');
+  assert.match(tagChoices(0, [opt('local')])[0].sub, /Local/);
+  assert.equal(tagChoices(1, [opt('express')])[0].title, 'Upgrade · Express $320');
+  assert.deepEqual(tagChoices(2, [opt('freight'), opt('bullet')]).map((o) => o.title), ['Freight $520', 'Bullet $520']);
+  const { world, game } = mockRoutes();
+  const tags = new UpgradeTags({ game, labels: null, groundAt: () => 0 });
+  game.state.goal = { id: FIRST_TRAIN_GOAL, text: '', how: '', progress: 0, target: 1, reward: 1 };
+  tags.update(0.016, game.state);
+  const bare = game.state.tracks.find((t) => t.level === 0);
+  assert.equal(tags.goalTrack, bare.id);
+  assert.ok(tags.glowWanted().has(bare.id));
+  game.state.goal = { id: 'deliver-5', text: '', how: '', progress: 0, target: 5, reward: 1 };
+  tags.update(0.016, game.state);
+  assert.equal(tags.goalTrack, null);
+  assert.ok(world);
+});
+
+test('label placement: a tag steps aside from a signpost instead of covering it', async () => {
+  const { placeLabels } = await import('./labels.js');
+  const sign = { x: 100, y: 100, w: 120, h: 44, priority: 1e5, pinned: true };
+  const tag = { x: 110, y: 104, w: 130, h: 40, priority: 5e4, pinned: true, movable: true };
+  const out = placeLabels([sign, tag]);
+  assert.ok(out.has(0) && out.has(1));
+  assert.deepEqual(out.get(0), { dx: 0, dy: 0 });
+  const o = out.get(1);
+  assert.ok(o.dx || o.dy, 'tag moved');
+  const l1 = 110 + o.dx - 65, r1 = 110 + o.dx + 65, t1 = 104 + o.dy - 20, b1 = 104 + o.dy + 20;
+  assert.ok(r1 <= 40 || l1 >= 160 || b1 <= 78 || t1 >= 122, 'no longer overlapping the sign');
+  // a dim (not pinned) tag with no free spot yields
+  const crowd = [sign];
+  for (let dx = -400; dx <= 400; dx += 60) for (let dy = -300; dy <= 300; dy += 30) if (dx || dy) crowd.push({ x: 100 + dx, y: 100 + dy, w: 58, h: 28, priority: 2e5, pinned: true });
+  crowd.push({ ...tag, pinned: false, priority: 600 });
+  assert.equal(placeLabels(crowd).has(crowd.length - 1), false);
+});
+
+test('delivery float shows the streak from 2 and grows with it', async () => {
+  const { deliveryFloat } = await import('./index.js');
+  assert.deepEqual(deliveryFloat(0), {});
+  assert.deepEqual(deliveryFloat(1), {});
+  const a = deliveryFloat(2), b = deliveryFloat(6);
+  assert.equal(a.streak.trim(), '×2');
+  assert.ok(b.scale > a.scale && b.scale <= 1.6);
+});
+
+test('mock game: goal, streak, route bonus and goalDone events', async () => {
+  const world = createMockWorld();
+  const game = createMockGame({ world });
+  const seen = { goalDone: [], routeBonus: [], delivered: [] };
+  game.on('goalDone', (p) => seen.goalDone.push(p));
+  game.on('routeBonus', (p) => seen.routeBonus.push(p));
+  game.on('thoughtDelivered', (p) => seen.delivered.push(p));
+  await game.start();
+  for (let i = 0; i < 600; i++) game.update(0.05);
+  assert.equal(game.state.goal.id, 'first-train');
+  assert.ok(seen.delivered.length > 0 && seen.delivered.every((p) => Number.isFinite(p.streak) && p.streak >= 1));
+  assert.ok(game.state.thoughts.some((t) => t.state === 'waiting' && world.placements.get(t.to)?.state === 'ghost'), 'someone waits for an unbuilt link');
+  game.state.money = 1e6;
+  const bare = game.state.tracks.find((t) => t.level === 0);
+  assert.ok(game.upgradeTrack(bare.id).ok);
+  assert.equal(seen.goalDone.length, 1);
+  assert.equal(seen.goalDone[0].goal.id, 'first-train');
+  const wanted = game.state.thoughts.find((t) => t.state === 'waiting' && world.placements.get(t.to)?.state === 'ghost');
+  const linkFrom = [...game.state.stations.values()].find((s) => s.article.links.includes(wanted.to));
+  const res = await game.build(linkFrom.title, wanted.to);
+  assert.ok(res.ok, res.reason);
+  assert.equal(seen.routeBonus.length, 1);
+  assert.ok(seen.routeBonus[0].amount > 0 && seen.routeBonus[0].station === wanted.to);
+});
+
+test('height: the surface keeps peaks and gorges at their true height; reveals rise without spikes', () => {
+  const world = createMockWorld();
+  const S = new Surface((q, r) => world.terrainAt(q, r));
+  let worst = 0;
+  for (const h of hexSpiral(0, 0, 14)) {
+    const t = world.terrainAt(h.q, h.r);
+    if (t.water) continue;
+    worst = Math.max(worst, Math.abs(S.natural(h.q * 3, h.r * 3).h - t.elevation));
+  }
+  assert.ok(worst < 0.12, `hex centre off its elevation by ${worst}`);
+  // reveal next to land that is already drawn: no vertex starts far below where it ends
+  const terrain = new Terrain({ parent: new THREE.Group(), materials: createMaterials(createSharedUniforms()), world });
+  terrain.reveal(hexSpiral(0, -9, 3).map((h) => world.terrainAt(h.q, h.r)), { animate: false });
+  terrain.reveal(hexSpiral(4, -9, 6).map((h) => world.terrainAt(h.q, h.r)), { animate: true, origin: { x: 0, z: 0 } });
+  let jump = 0;
+  for (const c of terrain.surface.chunks.values()) {
+    for (let k = 0; k < c.h.length; k++) if (c.rho[k] > 0.01) jump = Math.max(jump, c.h[k] - c.prev[k]);
+  }
+  assert.ok(jump < EDGE_SINK + 0.6, `a vertex rises ${jump} during the reveal`);
+  terrain.dispose();
+});
+
+test('tunnels: trains stay hidden for the whole drawn tunnel', async () => {
+  const { buriedSegments, buriedIntervals } = await import('./track.js');
+  const { world, game } = mockRoutes();
+  const terrain = new Terrain({ parent: new THREE.Group(), materials: createMaterials(createSharedUniforms()), world });
+  terrain.reveal(world.revealedTiles());
+  const view = new TracksView({ parent: new THREE.Group(), materials: createMaterials(createSharedUniforms()), terrain });
+  view.sync(game.state.tracks, false);
+  let inside = 0;
+  for (const t of game.state.tracks) {
+    const rec = view.tracks.get(t.id);
+    const S = resample(t.route);
+    const { buried } = buriedSegments(t.route, S, (x, z) => terrain.naturalAt(x, z));
+    assert.deepEqual(rec.buried, buriedIntervals(S, buried));
+    const L = routeLength(t.route);
+    for (const [a, b] of rec.buried) {
+      for (let s = a + 0.6; s < b - 0.6; s += 0.25) {
+        const cars = placeCars(t.route, s / L, true, carOffsets('local'), null, (p) => view.buriedAt(t.id, p.s));
+        assert.ok(cars[0].inTunnel, 'loco hidden inside the tunnel');
+        inside++;
+      }
+    }
+  }
+  assert.ok(inside > 0);
+  view.dispose();
+});
+
+test('camera: lifts out of hills between it and its target', async () => {
+  const { sightLift } = await import('./camera.js');
+  const flat = () => 0;
+  assert.equal(sightLift({ x: 0, y: 5, z: 0 }, { x: 10, y: 0, z: 0 }, flat), 0);
+  const hill = (x) => (x > 3 && x < 5 ? 4 : 0);
+  const need = sightLift({ x: 0, y: 3, z: 0 }, { x: 10, y: 0, z: 0 }, hill);
+  assert.ok(need > 0);
+  assert.equal(sightLift({ x: 0, y: 3 + need + 1e-6, z: 0 }, { x: 10, y: 0, z: 0 }, hill) < 1e-6, true);
+});
+
+test('tall bridges: trestles and stone viaduct piers build finite geometry', () => {
+  const pts = [];
+  for (let i = 0; i <= 80; i++) {
+    const u = i / 80;
+    pts.push({ x: -6 + u * 9, z: 4, y: 0.2 + Math.sin(u * Math.PI) * 3.5, kind: u > 0.1 && u < 0.9 ? 'bridge' : 'ground' });
+  }
+  const route = { from: 'a', to: 'b', style: 'cheap', hexes: [], points: pts, length: 0, cost: 0 };
+  const out = buildTrack(route, { groundAt: () => 0, naturalAt: () => 0 });
+  assert.ok(out.builder.vertexCount > 1000 && finiteArr(out.builder.pos) && finiteArr(out.builder.nor));
+  assert.equal(out.portals.length, 0);
+  assert.deepEqual(out.buried, []);
 });

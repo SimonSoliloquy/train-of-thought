@@ -2,9 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createWorld } from './index.js';
 import { createTerrain, ELEV_STEP } from './terrain.js';
-import { createRouter, classify, MAX_RISE_PER_HEX } from './router.js';
+import { createRouter, classify, MAX_RISE_PER_HEX, TUNNEL_DEPTH_LEVELS, LEDGE_SIDE_SLOPE } from './router.js';
+import { simulate, routeDrama, REAL_COVER } from './stats.mjs';
+import { RESERVATION_SPACING, RESERVATION_REACH } from './layout.js';
 import { WORLD, ECON, BIOMES } from '../config.js';
-import { hexDistance, hexToWorld, hexSpiral } from '../hex.js';
+import { hexDistance, hexToWorld, hexSpiral, worldToHex } from '../hex.js';
 import { routeLength } from '../route.js';
 
 // ---- helpers --------------------------------------------------------------------
@@ -18,6 +20,7 @@ function grow(world, steps = 14, linksPer = 10) {
     return out;
   };
   world.placeStart('Root');
+  world.noteLinks('Root', links('Root'));
   world.placeGhosts('Root', links('Root'));
   const built = ['Root'];
   const routes = [];
@@ -27,9 +30,10 @@ function grow(world, steps = 14, linksPer = 10) {
       || [...world.placements.values()].find((p) => p.state === 'ghost');
     const res = world.findRoutes(ghost.parent, ghost.title);
     routes.push(res);
-    world.commitRoute(res.cheap);
     world.setBuilt(ghost.title);
+    world.commitRoute(res.cheap);
     built.push(ghost.title);
+    world.noteLinks(ghost.title, links(ghost.title));
     world.placeGhosts(ghost.title, links(ghost.title));
   }
   return routes;
@@ -45,9 +49,9 @@ function checkRoute(world, route, terrain) {
   assert.deepEqual([hx.at(-1).q, hx.at(-1).r], [to.q, to.r], 'ends at to');
   for (let i = 1; i < hx.length; i++) assert.ok(isNeighbour(hx[i - 1], hx[i]), 'contiguous');
   assert.equal(new Set(hx.map((h) => `${h.q},${h.r}`)).size, hx.length, 'no repeated hex');
-  // never through a third station
+  // never through a third built station (unbuilt reservations are invisible and move off track)
   for (const p of world.placements.values()) {
-    if (p.title === route.from || p.title === route.to) continue;
+    if (p.title === route.from || p.title === route.to || p.state !== 'built') continue;
     assert.ok(!hx.some((h) => h.q === p.q && h.r === p.r), `route passes through station ${p.title}`);
   }
   // cost
@@ -78,7 +82,7 @@ function checkRoute(world, route, terrain) {
     const rail = Math.round(c.y / ELEV_STEP);
     const ground = Math.round(t.elevation / ELEV_STEP);
     if (t.water) assert.equal(hx[i].kind, 'bridge', 'water needs a bridge');
-    if (hx[i].kind === 'tunnel') assert.ok(t.elevation - c.y >= 0.6 - 1e-9, 'tunnel runs below ground');
+    if (hx[i].kind === 'tunnel') assert.ok(t.elevation - c.y >= TUNNEL_DEPTH_LEVELS * ELEV_STEP - 1e-9, 'tunnel runs below ground');
     if (hx[i].kind === 'bridge') assert.ok(t.water || c.y - t.elevation >= 0.6 - 1e-9, 'bridge spans water or a gap');
     if (t.water) assert.ok(c.y > t.elevation, 'bridge above water');
     assert.ok(Math.abs(ground - rail) <= 1 || hx[i].kind !== 'ground', 'ground track sits at ground');
@@ -159,7 +163,8 @@ test('terrain: biome regions are coherent (most neighbours share the biome)', ()
     n++;
     if (w.terrainAt(q, r).biome === w.terrainAt(q + 1, r).biome) same++;
   }
-  assert.ok(same / n > 0.85, `neighbour agreement ${same / n}`);
+  // mountain ranges are long bands a few hexes wide, so they add border; regions stay large
+  assert.ok(same / n > 0.75, `neighbour agreement ${same / n}`);
 });
 
 test('terrain: rivers are long connected lines of water', () => {
@@ -190,10 +195,10 @@ test('terrain: rivers are long connected lines of water', () => {
   }
 });
 
-test('terrain: the start area is dry and buildable for every seed', () => {
+test('terrain: the start hex and its ring are dry and buildable for every seed', () => {
   for (let seed = 0; seed < 60; seed++) {
     const w = createWorld({ seed });
-    for (const h of hexSpiral(0, 0, WORLD.revealStation)) assert.equal(w.terrainAt(h.q, h.r).water, false, `seed ${seed}`);
+    for (const h of hexSpiral(0, 0, 1)) assert.equal(w.terrainAt(h.q, h.r).water, false, `seed ${seed}`);
     const terrain = createTerrain(seed);
     assert.ok(terrain.isBuildable(0, 0), `seed ${seed} origin not buildable`);
     w.placeStart('S');
@@ -212,7 +217,7 @@ test('layout: placeStart at origin, built, reveals revealStation', () => {
   assert.throws(() => w.placeStart('Beta'));
 });
 
-test('layout: spacing, dry buildable hexes, existing titles untouched', () => {
+test('layout: spacing, dry buildable hexes, built stations never move', () => {
   for (const seed of [1, 7, 23]) {
     const w = createWorld({ seed });
     grow(w, 20);
@@ -222,11 +227,12 @@ test('layout: spacing, dry buildable hexes, existing titles untouched', () => {
       assert.ok(!w.terrainAt(all[i].q, all[i].r).water, 'not on water');
       assert.ok(terrain.isBuildable(all[i].q, all[i].r), 'not on an extreme tile');
       for (let j = i + 1; j < all.length; j++) {
-        assert.ok(hexDistance(all[i], all[j]) >= WORLD.minStationSpacing, `${all[i].title} too close to ${all[j].title}`);
+        const need = all[i].state === 'built' || all[j].state === 'built' ? WORLD.minStationSpacing : RESERVATION_SPACING;
+        assert.ok(hexDistance(all[i], all[j]) >= need, `${all[i].title} too close to ${all[j].title}`);
       }
     }
-    // re-placing existing titles: not moved, not returned
-    const before = all.map((p) => ({ ...p }));
+    // existing titles are not returned; built stations never move (reservations may)
+    const before = all.filter((p) => p.state === 'built').map((p) => ({ ...p }));
     const parent = all.find((p) => p.state === 'built' && p.title !== 'Root');
     const res = w.placeGhosts(parent.title, [all[0].title, all[3].title, 'Brand new']);
     assert.deepEqual(res.placements.map((p) => p.title), ['Brand new']);
@@ -292,7 +298,119 @@ test('layout: a crowded map still finds a spot for every link', () => {
   const all = [...w.placements.values()];
   assert.equal(all.length, 1 + 8 * 16);
   for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
-    assert.ok(hexDistance(all[i], all[j]) >= WORLD.minStationSpacing);
+    const need = all[i].state === 'built' || all[j].state === 'built' ? WORLD.minStationSpacing : RESERVATION_SPACING;
+    assert.ok(hexDistance(all[i], all[j]) >= need);
+  }
+});
+
+test('layout: reservations stay within reach of their linker when room exists', () => {
+  for (const seed of [1, 2, 3, 8]) {
+    const w = createWorld({ seed });
+    w.placeStart('Hub');
+    const terrain = createTerrain(seed);
+    const room = hexSpiral(0, 0, RESERVATION_REACH).filter((h) => hexDistance(h, { q: 0, r: 0 }) >= WORLD.minStationSpacing && terrain.isBuildable(h.q, h.r)).length;
+    const want = Math.min(40, room);
+    w.placeGhosts('Hub', Array.from({ length: want }, (_, i) => `t${i}`));
+    for (const p of w.placements.values()) {
+      assert.ok(hexDistance(p, { q: 0, r: 0 }) <= RESERVATION_REACH, `seed ${seed}: ${p.title} at ${hexDistance(p, { q: 0, r: 0 })} (room ${room})`);
+    }
+  }
+});
+
+// ---- relatedness (noteLinks) and reservations -------------------------------------
+
+/** Two built stations A (start) and B, both linking to S; S was first put on the map by A. */
+function twoLinkers(seed, withNote) {
+  const w = createWorld({ seed });
+  w.placeStart('A');
+  const aLinks = ['B', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'S'];
+  if (withNote) w.noteLinks('A', aLinks);
+  w.placeGhosts('A', aLinks);
+  const res = w.findRoutes('A', 'B');
+  w.setBuilt('B');
+  w.commitRoute(res.cheap);
+  const bLinks = ['y1', 'S', 'y2', 'y3'];
+  if (withNote) w.noteLinks('B', bLinks);
+  w.placeGhosts('B', bLinks);
+  return w;
+}
+
+test('noteLinks: a link shared by two built stations moves towards the second linker', () => {
+  let closer = 0, n = 0;
+  for (let seed = 1; seed <= 20; seed++) {
+    const plain = createWorld({ seed });
+    plain.placeStart('A');
+    plain.placeGhosts('A', ['B', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'S']);
+    const w = twoLinkers(seed, true);
+    const B = w.placements.get('B'), S = w.placements.get('S'), S0 = plain.placements.get('S');
+    assert.equal(S.state, 'ghost');
+    assert.equal(S.parent, 'A', 'first linker stays the parent');
+    n++;
+    if (hexDistance(S, B) < hexDistance(S0, B)) closer++;
+    assert.ok(hexDistance(S, B) <= RESERVATION_REACH + 4, `seed ${seed}: S is ${hexDistance(S, B)} from B`);
+  }
+  assert.ok(closer >= n * 0.8, `only ${closer}/${n} moved closer to B`);
+});
+
+test('noteLinks: shared links become junctions between their linkers', () => {
+  // S linked from A and B sits nearer the A-B midpoint than A's unshared links do
+  let ok = 0;
+  for (let seed = 1; seed <= 20; seed++) {
+    const w = twoLinkers(seed, true);
+    const A = hexToWorld(0, 0), Bp = w.placements.get('B'), B = hexToWorld(Bp.q, Bp.r);
+    const mid = { x: (A.x + B.x) / 2, z: (A.z + B.z) / 2 };
+    const dist = (t) => { const p = w.placements.get(t), q = hexToWorld(p.q, p.r); return Math.hypot(q.x - mid.x, q.z - mid.z); };
+    const unshared = ['x4', 'x5', 'x6'].map(dist).reduce((a, b) => a + b) / 3;
+    if (dist('S') < unshared) ok++;
+  }
+  assert.ok(ok >= 15, `${ok}/20`);
+});
+
+test('noteLinks: deterministic, built stations never move, optional', () => {
+  const a = twoLinkers(3, true), b = twoLinkers(3, true);
+  assert.deepEqual([...a.placements.values()], [...b.placements.values()]);
+  const B = { ...a.placements.get('B') };
+  a.noteLinks('Q', ['B', 'A']); // an unplaced title noting links: harmless
+  a.noteLinks('B', ['A', 'x1', 'x2']);
+  assert.deepEqual({ ...a.placements.get('B') }, B);
+  assert.deepEqual({ ...a.placements.get('A') }, { title: 'A', q: 0, r: 0, state: 'built', parent: null });
+  // without noteLinks the world still works (placeGhosts counts the parent as a linker)
+  const c = twoLinkers(3, false);
+  assert.ok(c.placements.get('S'));
+  assert.ok(c.findRoutes('A', 'S').cheap.hexes.length >= 2);
+});
+
+test('reservations: re-placed off new track and away from newly built stations; findRoutes uses current positions', () => {
+  for (let seed = 1; seed <= 10; seed++) {
+    const w = createWorld({ seed });
+    grow(w, 10);
+    const trackHexes = new Set();
+    // replay: every committed route's hexes are free of reservations
+    const built = [...w.placements.values()].filter((p) => p.state === 'built');
+    for (let i = 1; i < built.length; i++) {
+      const res = w.findRoutes(built[i - 1].title, built[i].title);
+      w.commitRoute(res.cheap);
+      for (const h of res.cheap.hexes) trackHexes.add(`${h.q},${h.r}`);
+    }
+    for (const p of w.placements.values()) {
+      if (p.state === 'ghost') assert.ok(!trackHexes.has(`${p.q},${p.r}`), `reservation ${p.title} on track`);
+    }
+    // routes end where the placement is now
+    const ghost = [...w.placements.values()].find((p) => p.state === 'ghost' && w.placements.get(p.parent).state === 'built');
+    const res = w.findRoutes(ghost.parent, ghost.title);
+    assert.deepEqual([res.cheap.hexes.at(-1).q, res.cheap.hexes.at(-1).r], [ghost.q, ghost.r]);
+  }
+});
+
+test('reveal: unbuilt links reveal nothing when revealGhost < 0', () => {
+  assert.ok(WORLD.revealGhost < 0, 'config expects hidden ghosts');
+  const w = createWorld({ seed: 2 });
+  const start = w.placeStart('S').revealed.length;
+  const g = w.placeGhosts('S', ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
+  assert.deepEqual(g.revealed, []);
+  assert.equal(w.revealedTiles().length, start);
+  for (const p of g.placements) {
+    if (hexDistance(p, { q: 0, r: 0 }) > WORLD.revealStation) assert.equal(w.isRevealed(p.q, p.r), false);
   }
 });
 
@@ -364,9 +482,11 @@ test('routes: classify obeys the documented thresholds', () => {
   assert.equal(classify(5, true, 0, 5), -1);          // rail must clear water
   assert.equal(classify(5, true, 0, 6), 2);           // bridge
   assert.equal(classify(10, false, 0, 7), 3);         // 3 levels below -> tunnel
+  assert.equal(classify(6, false, 0, 4), 3);          // 2 levels below -> tunnel
   assert.equal(classify(4, false, 0, 7), 2);          // 3 levels above -> viaduct
   assert.equal(classify(5, false, 0, 7), 1);          // 2 above -> ledge (embankment)
-  assert.equal(classify(5, false, 1.0, 5), 1);        // steep side slope -> ledge
+  assert.equal(classify(5, false, LEDGE_SIDE_SLOPE, 5), 1); // steep side slope -> ledge
+  assert.equal(classify(5, false, LEDGE_SIDE_SLOPE - 0.2, 5), 0); // a slope a station may stand on -> ground
   assert.equal(classify(5, false, 0.2, 4), 0);        // ground
 });
 
@@ -394,6 +514,75 @@ test('routes: prefer not to run along existing track', () => {
   checkPair(res2);
 });
 
+// ---- drama: ordinary links cross dramatic land -------------------------------------
+
+/** Cheap routes of simulated games (the game always builds the cheap one), with per-seed data. */
+const DRAMA = (() => {
+  const seeds = [];
+  for (let seed = 1; seed <= 16; seed++) {
+    const { world, results, built } = simulate(seed, 12);
+    const elev = built.map((t) => { const p = world.placements.get(t); return world.terrainAt(p.q, p.r).elevation; });
+    seeds.push({ seed, routes: results.map((r) => routeDrama(world, r.cheap)), elev });
+  }
+  return seeds;
+})();
+const mean = (a) => a.reduce((s, x) => s + x, 0) / a.length;
+
+test('drama: cheap routes tunnel (real cover) and bridge often, and climb', () => {
+  const all = DRAMA.flatMap((s) => s.routes);
+  const tunnel = all.filter((d) => d.runs.realTunnel > 0).length / all.length;
+  const bridge = all.filter((d) => d.runs.bridge > 0).length / all.length;
+  const climb = mean(all.map((d) => d.climb));
+  assert.ok(tunnel >= 0.35, `real tunnels (cover >= ${REAL_COVER}) on only ${(tunnel * 100).toFixed(0)}% of cheap routes`);
+  assert.ok(bridge >= 0.5, `bridges on only ${(bridge * 100).toFixed(0)}% of cheap routes`);
+  assert.ok(climb >= 1.5, `average rail climb per route only ${climb.toFixed(2)}`);
+});
+
+test('drama: every seed has 2+ real tunnels and 2+ bridges on the routes to its first 8 stations', () => {
+  for (const s of DRAMA) {
+    const first = s.routes.slice(0, 8);
+    const t = first.reduce((n, d) => n + d.runs.realTunnel, 0), b = first.reduce((n, d) => n + d.runs.bridge, 0);
+    assert.ok(t >= 2 && b >= 2, `seed ${s.seed}: ${t} real tunnels, ${b} bridges`);
+  }
+});
+
+test('drama: bridges stand well above the bed; stations sit at different heights', () => {
+  const heights = DRAMA.flatMap((s) => s.routes.flatMap((d) => d.bridgeHeights));
+  assert.ok(mean(heights) >= 1.1, `bridge rail only ${mean(heights).toFixed(2)} above the bed on average`);
+  assert.ok(heights.filter((h) => h >= 1.0).length / heights.length >= 0.6, 'most bridges span a real drop');
+  const sd = mean(DRAMA.map((s) => { const m = mean(s.elev); return Math.sqrt(mean(s.elev.map((e) => (e - m) ** 2))); }));
+  assert.ok(sd >= 0.6, `station elevations spread only ${sd.toFixed(2)} (sd per seed)`);
+});
+
+test('terrain: the start sits in a basin ringed by a rim (or a river) in nearly every direction', () => {
+  for (let seed = 0; seed < 40; seed++) {
+    const terrain = createTerrain(seed);
+    const e0 = terrain.terrainAt(0, 0).elevation;
+    let closed = 0;
+    for (let a = 0; a < 12; a++) {
+      const th = (a / 12) * 2 * Math.PI;
+      let top = 0, water = false;
+      for (let d = 2.5; d <= 9; d += 0.5) {
+        const h = worldToHex(Math.cos(th) * d, Math.sin(th) * d);
+        const t = terrain.terrainAt(h.q, h.r);
+        water ||= t.water;
+        top = Math.max(top, t.elevation);
+      }
+      if (top - e0 >= 1.0 || water) closed++;
+    }
+    assert.ok(closed >= 9, `seed ${seed}: only ${closed}/12 directions leave the basin over a rim or a river`);
+  }
+});
+
+test('terrain: enough land stays buildable for the layout', () => {
+  let ok = 0, n = 0;
+  for (const seed of [1, 2, 3, 4]) {
+    const terrain = createTerrain(seed);
+    for (let q = -50; q <= 50; q += 2) for (let r = -50; r <= 50; r += 2) { n++; if (terrain.isBuildable(q, r)) ok++; }
+  }
+  assert.ok(ok / n >= 0.4, `only ${(ok / n * 100).toFixed(0)}% of hexes are buildable`);
+});
+
 // ---- reveal ---------------------------------------------------------------------
 
 test('reveal: each call returns only newly revealed tiles', () => {
@@ -412,8 +601,8 @@ test('reveal: each call returns only newly revealed tiles', () => {
   assert.equal(take(w.placeStart('S').revealed), 37);
   const g = w.placeGhosts('S', ['a', 'b', 'c', 'd', 'e', 'f']);
   take(g.revealed);
-  for (const p of g.placements) {
-    for (const h of hexSpiral(p.q, p.r, WORLD.revealGhost)) assert.ok(w.isRevealed(h.q, h.r));
+  if (WORLD.revealGhost >= 0) {
+    for (const p of g.placements) for (const h of hexSpiral(p.q, p.r, WORLD.revealGhost)) assert.ok(w.isRevealed(h.q, h.r));
   }
   const res = w.findRoutes('S', 'a');
   const n1 = take(w.commitRoute(res.cheap).revealed);

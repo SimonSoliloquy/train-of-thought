@@ -1,98 +1,83 @@
-import { TRAIN_TYPES, ECON } from '../config.js';
+// The only readout: gold, and what the next payday will bring. Plus one small quiet speed button.
+import { ECON } from '../config.js';
 import { h, setText, setClass, setWidth } from './dom.js';
-import { fmtMoney, fmtRate, fmtClock, fmtMult, fmtSeconds, fmtInt, netPerMin, milestoneProgress, reputationInfo } from './format.js';
+import { fmtMoney, paydayView, paydayBreakdown, bankruptView, nextSpeed, speedLabel } from './format.js';
 
-const SPEEDS = [
-  { speed: 0, label: '❚❚', title: 'Pause (Space)' },
-  { speed: 1, label: '1×', title: 'Normal speed (1)' },
-  { speed: 2, label: '2×', title: 'Double speed (2)' },
-  { speed: 4, label: '4×', title: 'Fast (3)' },
-];
-
-function cell(label, extra) {
-  const value = h('div', { class: 'tot-v' });
-  const sub = h('div', { class: 'tot-sub' });
-  const el = h('div', { class: 'tot-cell' + (extra ? ' ' + extra : '') }, h('div', { class: 'tot-k', text: label }), value, sub);
-  return { el, value, sub };
-}
+const BREAKDOWN_MS = 3000;
 
 export function createHud(ctx) {
   const { game, state } = ctx;
+  let lastRunning = 1;
+  let breakdownUntil = 0;
 
-  const money = cell('Cash', 'tot-cell-money');
-  const net = cell('Net', 'tot-cell-net');
-  const infl = cell('Inflation');
-  const rep = cell('Reputation', 'tot-cell-rep');
-  const clock = cell('Time');
-  const score = cell('Score');
+  const gold = h('div', { class: 'tot-gold-v', title: 'Your gold' });
+  const next = h('div', { class: 'tot-next' });
+  const fill = h('div', { class: 'tot-bar-fill' });
+  const detailAmt = h('b', { class: 'tot-last-amt' });
+  const detailText = h('span', { class: 'tot-last-detail' });
+  const detail = h('div', { class: 'tot-last' }, detailAmt, detailText);
+  const el = h('div', { class: 'tot-panel tot-hud', title: 'Gold arrives in a payday every ' + ECON.paydaySeconds + ' seconds' },
+    gold,
+    h('div', { class: 'tot-hud-pay' }, next, h('div', { class: 'tot-bar' }, fill), detail));
 
-  const linksVal = h('div', { class: 'tot-v' });
-  const linksFill = h('div', { class: 'tot-bar-fill' });
-  const linksSub = h('div', { class: 'tot-sub' });
-  const links = h(
-    'div',
-    { class: 'tot-cell tot-cell-links' },
-    h('div', { class: 'tot-k', text: 'Unique links' }),
-    linksVal,
-    h('div', { class: 'tot-bar' }, linksFill),
-    linksSub,
-  );
+  const speed = h('button', { class: 'tot-speed', type: 'button', title: 'Game speed. Space pauses.', onClick: (e) => {
+    game.setSpeed(nextSpeed(state.speed, lastRunning));
+    e.currentTarget.blur();
+  } });
 
-  const speedBtns = SPEEDS.map((s) =>
-    h('button', { class: 'tot-speed', type: 'button', title: s.title, text: s.label, onClick: (e) => { game.setSpeed(s.speed); e.currentTarget.blur(); } }),
-  );
-
-  const el = h(
-    'header',
-    { class: 'tot-panel tot-hud' },
-    h('div', { class: 'tot-brand' }, h('span', { class: 'tot-brand-mark' }), h('span', { class: 'tot-brand-name', text: 'Train of Thought' })),
-    money.el, net.el, rep.el, infl.el, clock.el, score.el, links,
-    h('div', { class: 'tot-speeds', role: 'group', 'aria-label': 'Game speed' }, speedBtns),
-  );
-
-  function update() {
-    // money
-    const neg = state.money < 0;
-    setText(money.value, fmtMoney(state.money));
-    setClass(money.el, 'neg', neg);
-    setText(money.sub, neg && state.bankruptIn != null ? 'Bankrupt in ' + fmtSeconds(state.bankruptIn) : '');
-
-    // net per minute, parts on the second line and in the tooltip
-    const n = netPerMin(state);
-    setText(net.value, fmtRate(n, true));
-    setClass(net.el, 'neg', n < 0);
-    setText(net.sub, `links ${fmtInt(state.incomePerMin)} · fares ${fmtInt(state.faresPerMin)} · upkeep ${fmtInt(state.upkeepPerMin)}`);
-    const tip = `Link income ${fmtRate(state.incomePerMin, true)}\nFares ${fmtRate(state.faresPerMin, true)}\nUpkeep -${fmtRate(state.upkeepPerMin)}`;
-    if (net.el.title !== tip) net.el.title = tip;
-
-    setText(infl.value, fmtMult(state.inflation));
-
-    // reputation: what passengers think of the network, and what that does
-    const r = reputationInfo(state.reputation, ECON);
-    setText(rep.value, r.percent + '%');
-    setText(rep.sub, `${r.word} · fares ${fmtMult(r.fare)}`);
-    setClass(rep.el, 'neg', r.tone === 'bad');
-    const repTip = `Reputation ${r.percent}% (${r.word})\nFares ${fmtMult(r.fare)}\nPassengers turning up ${fmtMult(r.crowd)}\nFast deliveries raise it; passengers who give up lower it.`;
-    if (rep.el.title !== repTip) rep.el.title = repTip;
-    setText(clock.value, fmtClock(state.time));
-    setText(score.value, fmtInt(state.score));
-
-    // unique links toward the next milestone
-    const next = state.nextMilestone;
-    const frac = milestoneProgress(state.uniqueLinks, next);
-    if (next && frac != null) {
-      const t = TRAIN_TYPES[next.unlock];
-      setText(linksVal, `${fmtInt(state.uniqueLinks)} / ${fmtInt(next.uniqueLinks)}`);
-      setText(linksSub, `unlocks ${t ? t.name : next.unlock}`);
-      setWidth(linksFill, frac);
-    } else {
-      setText(linksVal, fmtInt(state.uniqueLinks));
-      setText(linksSub, 'all trains unlocked');
-      setWidth(linksFill, 1);
-    }
-
-    SPEEDS.forEach((s, i) => setClass(speedBtns[i], 'on', state.speed === s.speed));
+  function flash(node) {
+    node.classList.remove('flash');
+    void node.offsetWidth; // restart the animation
+    node.classList.add('flash');
   }
 
-  return { el, update };
+  /** A payday landed: flash the amount and show where it came from for a few seconds. */
+  function payday(e) {
+    const b = paydayBreakdown(e);
+    setText(detailAmt, b.headline);
+    setText(detailText, b.detail);
+    setClass(detailAmt, 'neg', b.negative);
+    breakdownUntil = performance.now() + BREAKDOWN_MS;
+    detail.classList.add('show');
+    flash(detail);
+    flash(gold);
+  }
+
+  /** Gold jumped for another reason (a reward): pulse it. */
+  function pulse() {
+    flash(gold);
+  }
+
+  function update() {
+    if (state.speed > 0) lastRunning = state.speed;
+
+    setText(gold, fmtMoney(state.money));
+    const neg = state.money < 0;
+    setClass(el, 'neg', neg);
+
+    // Negative gold: the bankruptcy countdown takes the payday text's place.
+    if (neg && state.bankruptIn != null) {
+      const v = bankruptView(state.bankruptIn, ECON.bankruptcyGraceSeconds);
+      setText(next, v.text);
+      setClass(next, 'neg', true);
+      setWidth(fill, v.fraction);
+      setClass(fill, 'danger', true);
+    } else {
+      const v = paydayView(state.payday);
+      setText(next, v.text);
+      setClass(next, 'neg', v.negative);
+      setWidth(fill, v.fraction);
+      setClass(fill, 'danger', false);
+    }
+
+    if (breakdownUntil && performance.now() > breakdownUntil) {
+      breakdownUntil = 0;
+      detail.classList.remove('show');
+    }
+
+    setText(speed, speedLabel(state.speed));
+    setClass(speed, 'paused', state.speed === 0);
+  }
+
+  return { el, speed, update, payday, pulse };
 }

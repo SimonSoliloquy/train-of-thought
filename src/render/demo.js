@@ -23,9 +23,37 @@ function say(text) {
 renderer.onPick((pick) => {
   say(`pick ${JSON.stringify(pick)}`);
   console.log('[demo] pick', pick);
-  if (pick.kind === 'station' || pick.kind === 'ghost') {
+  if (pick.kind === 'upgrade') {
+    // an upgrade tag: buy that train for the track
+    const res = game.upgradeTrack(pick.trackId, pick.typeId);
+    say(res.ok ? `upgraded track ${pick.trackId} to ${pick.typeId}` : res.reason);
+  } else if (pick.kind === 'station') {
+    // a built station: its unbuilt links stand as signposts around it
+    selectedStation = pick.title;
     renderer.setSelection(pick.title);
+    renderer.setRoutePreview(null);
     renderer.focus(pick.title);
+  } else if (pick.kind === 'ghost') {
+    // a signpost: price the route to that link; its marker shows at the far end.
+    // Clicking the same link again builds it.
+    if (selectedStation && pricing === pick.title) {
+      const from = selectedStation;
+      game.build(from, pick.title).then((res) => {
+        say(res.ok ? `built ${from} -> ${pick.title}` : res.reason);
+        if (res.ok) { renderer.setRoutePreview(null); renderer.setSelection(pick.title); selectedStation = pick.title; }
+      });
+      pricing = null;
+      return;
+    }
+    pricing = pick.title;
+    renderer.setSelection(pick.title);
+    if (selectedStation) {
+      try {
+        const r = world.findRoutes(selectedStation, pick.title);
+        renderer.setRoutePreview([r.cheap], 'cheap');
+        previewOn = true;
+      } catch (err) { say(String(err)); }
+    }
   } else if (pick.kind === 'train') {
     following = pick.trainId;
     renderer.follow(pick.trainId);
@@ -35,13 +63,15 @@ renderer.onPick((pick) => {
 });
 
 let following = null;
-let lineHi = null;
+let pricing = null;
+let selectedStation = null;
 let previewStyle = 'direct';
 let previewOn = false;
 function showPreview() {
   if (!world.placements.has('Iron Bridge') || world.placements.get('Iron Bridge').state !== 'built') return;
   const r = world.findRoutes('Iron Bridge', 'Danube');
-  renderer.setRoutePreview([r.cheap, r.direct], previewStyle);
+  renderer.setRoutePreview([previewStyle === 'cheap' ? r.cheap : r.direct], previewStyle);
+  renderer.setSelection('Danube');
   previewOn = true;
 }
 
@@ -54,11 +84,9 @@ window.addEventListener('keydown', (e) => {
     following = i >= ids.length ? null : ids[i];
     renderer.follow(following);
     say(following == null ? 'free camera' : `following train ${following}`);
-  } else if (k === 'l') {
-    const ids = [null, ...game.state.lines.map((l) => l.id)];
-    lineHi = ids[(ids.indexOf(lineHi) + 1) % ids.length];
-    renderer.setLineHighlight(lineHi);
-    say(`line highlight ${lineHi}`);
+  } else if (k === 'm') {
+    game.state.money += 250;
+    say(`gold: $${game.state.money}`);
   } else if (k === 'p') {
     previewStyle = previewStyle === 'direct' ? 'cheap' : 'direct';
     showPreview();
@@ -82,6 +110,15 @@ window.addEventListener('keydown', (e) => {
     renderer.setSelection(null);
     renderer.follow(null);
     following = null;
+  } else if (k === 'k') {
+    // pretend a goal was met (celebration test)
+    game._emit('goalDone', { goal: { id: 'test', text: 'Test goal', how: '', progress: 1, target: 1, reward: 100 }, reward: 100, next: game.state.goal });
+    say('goalDone (test)');
+  } else if (k === 'o') {
+    const list = [...game.state.stations.keys()];
+    const st = list[Math.floor(Math.random() * list.length)];
+    game._emit('routeBonus', { station: st, count: 3, amount: 120 });
+    say(`routeBonus at ${st} (test)`);
   } else if (k === 'g') {
     const ghosts = [...world.placements.values()].filter((p) => p.state === 'ghost');
     if (ghosts.length) { const g = ghosts[Math.floor(Math.random() * ghosts.length)]; renderer.setSelection(g.title); renderer.focus(g.title); }
@@ -101,6 +138,8 @@ function frame(now) {
   frames++; fpsT += dt;
   if (fpsT >= 0.5) {
     const info = renderer._debug.renderer.info;
+    const g = game.state.goal;
+    document.getElementById('gold').textContent = `gold $${Math.round(game.state.money)} · streak ${game.state.streak}${g ? ` · goal: ${g.text} (${g.progress}/${g.target})` : ''}`;
     fpsEl.textContent = `${Math.round(frames / fpsT)} fps · ${renderer._debug.terrain.tileCount} tiles · ${info.render.calls} calls · ${(info.render.triangles / 1000).toFixed(0)}k tris`;
     frames = 0; fpsT = 0;
   }

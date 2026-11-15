@@ -20,6 +20,24 @@ const _sph = new THREE.Spherical();
 const _sph2 = new THREE.Spherical();
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
+const _v3 = new THREE.Vector3();
+
+/**
+ * How far `from` must rise so that the land stays at least `clear` below the line from it to
+ * `to` (and below `from` itself). Raising `from` by d lifts the point at u along the line by
+ * d * (1 - u). Pure.
+ */
+export function sightLift(from, to, groundAt, clear = 0.3) {
+  let need = 0;
+  for (const u of [0, 0.12, 0.25, 0.4, 0.55, 0.7, 0.82]) {
+    const x = from.x + (to.x - from.x) * u, y = from.y + (to.y - from.y) * u, z = from.z + (to.z - from.z) * u;
+    const g = groundAt(x, z);
+    if (!Number.isFinite(g)) continue;
+    const deficit = g + clear * (1 - u) - y;
+    if (deficit > 0) need = Math.max(need, deficit / (1 - u));
+  }
+  return need;
+}
 
 export class CameraRig {
   constructor(camera, dom) {
@@ -126,6 +144,8 @@ export class CameraRig {
           desiredPos.y = Math.max(desiredPos.y, gmax + 0.9);
         }
         const desiredLook = _v2.set(h.x + fx * 3.0, h.y + 0.15, h.z + fz * 3.0);
+        // in a valley or gorge, keep a clear line from the camera to the train
+        if (env.groundAt && !h.inTunnel) desiredPos.y += sightLift(desiredPos, _v3.set(h.x, h.y + 0.2, h.z), env.groundAt, 0.25);
         if (!this.chase) this.chase = { pos: cam.position.clone(), look: c.target.clone(), blend: 0 };
         const ch = this.chase;
         ch.blend = Math.min(1, ch.blend + dt * 0.9);
@@ -181,6 +201,19 @@ export class CameraRig {
     if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 1e-6) {
       t.x += dx; t.y += dy; t.z += dz;
       cam.position.x += dx; cam.position.y += dy; cam.position.z += dz;
+    }
+    this._keepClear(env, Math.min(1, dt * 10));
+  }
+
+  /** Lift the orbit camera out of hills: above the land under it, with a clear view of the target. */
+  _keepClear(env, k) {
+    if (!env || !env.groundAt) return;
+    const cam = this.camera;
+    const need = sightLift(cam.position, this.controls.target, env.groundAt, 0.35);
+    if (need > 0) {
+      const g = env.groundAt(cam.position.x, cam.position.z);
+      const hard = Number.isFinite(g) ? Math.max(0, g + 0.5 - cam.position.y) : 0;
+      cam.position.y += Math.max(hard, need * k);
     }
   }
 

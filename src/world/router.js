@@ -1,19 +1,26 @@
 // Track routing. A* over (hex, rail level) states inside a bounded ellipse between the two
-// stations. The rail level may change by at most one ELEV_STEP per hex (the grade limit);
-// where the ground is steeper the rail stays at grade and the hex becomes a ledge, tunnel or
-// bridge according to how far the rail sits below or above the ground.
+// stations. The rail level may change by at most MAX_RISE_LEVELS elevation steps per hex (the
+// grade limit), so trains ride over rolling country; where the ground is steeper the rail
+// stays at grade and the hex becomes a ledge, tunnel or bridge according to how far the rail
+// sits below or above the ground. Cost is per hex kind only; climbing is free, boring and
+// spanning are what cost, so the cheap route tunnels where the land is too steep to climb
+// and too long to walk round.
 
 import { ECON } from '../config.js';
 import { HEX_DIRS, hexDistance, hexSpiral, hexToWorld } from '../hex.js';
 import { routeLength } from '../route.js';
 import { ELEV_STEP, MAX_LEVEL, tileKey } from './terrain.js';
 
-/** Max rail rise per hex, world units (one elevation step). */
-export const MAX_RISE_PER_HEX = ELEV_STEP;
-/** Ground side slope (world units to any neighbour) at which an at-grade hex becomes a ledge. */
-export const LEDGE_SIDE_SLOPE = 0.8;
+/** Max rail rise per hex in elevation levels, and in world units (the grade limit). */
+export const MAX_RISE_LEVELS = 2;
+export const MAX_RISE_PER_HEX = MAX_RISE_LEVELS * ELEV_STEP;
+/** Routing-only tie-break per level climbed beyond one per hex: steep grades only where they help. */
+const STEEP_TIE = 0.3;
+/** Ground side slope (world units to any neighbour) at which an at-grade hex becomes a ledge
+ *  (matches STATION_MAX_STEEPNESS: land a station may stand on carries plain track). */
+export const LEDGE_SIDE_SLOPE = 1.2;
 /** Rail this many levels below ground -> tunnel; this many above -> bridge (viaduct). */
-export const TUNNEL_DEPTH_LEVELS = 3;
+export const TUNNEL_DEPTH_LEVELS = 2;
 export const VIADUCT_HEIGHT_LEVELS = 3;
 /** Rail sits this many levels above a water surface on a bridge. */
 export const BRIDGE_CLEARANCE_LEVELS = 1;
@@ -149,7 +156,7 @@ export function createRouter(terrain, stationAt, trackHexes) {
     reached[ai] = 1;
     kindOf[s] = sk;
     const heap = new Heap();
-    heap.push(g[s] + hMul * Math.max(hDist[ai], Math.abs(startLevel - goalLevel)), s);
+    heap.push(g[s] + hMul * Math.max(hDist[ai], Math.ceil(Math.abs(startLevel - goalLevel) / MAX_RISE_LEVELS)), s);
     let goal = -1;
 
     while (heap.size) {
@@ -171,7 +178,7 @@ export function createRouter(terrain, stationAt, trackHexes) {
         const j = nbr[hi * 6 + d];
         if (j < 0 || blocked[j]) continue;
         const isGoalHex = j === bi;
-        for (let dl = -1; dl <= 1; dl++) {
+        for (let dl = -MAX_RISE_LEVELS; dl <= MAX_RISE_LEVELS; dl++) {
           const nl = lv + dl;
           if (nl < 0 || nl >= L) continue;
           if (isGoalHex && nl !== goalLevel) continue;
@@ -182,7 +189,8 @@ export function createRouter(terrain, stationAt, trackHexes) {
           // Routing-only tie-break (not part of cost): keep the rail on the surface where it
           // can be, so open track is never buried a step below flat ground.
           const off = water[j] === 1 ? 0 : Math.abs(ground[j] - nl) * OFF_GROUND_TIE;
-          const ng = gc + stepW + KIND_COST[k] + (track[j] ? penalty : 0) + turn + off;
+          const steep = dl > 1 || dl < -1 ? (Math.abs(dl) - 1) * STEEP_TIE : 0;
+          const ng = gc + stepW + KIND_COST[k] + (track[j] ? penalty : 0) + turn + off + steep;
           if (ng < g[node]) {
             // a route never revisits a hex (no climbing in loops): check the path so far
             if (reached[j]) {
@@ -194,7 +202,7 @@ export function createRouter(terrain, stationAt, trackHexes) {
             g[node] = ng;
             prev[node] = cur;
             kindOf[node] = k;
-            heap.push(ng + hMul * Math.max(hDist[j], Math.abs(nl - goalLevel)), node);
+            heap.push(ng + hMul * Math.max(hDist[j], Math.ceil(Math.abs(nl - goalLevel) / MAX_RISE_LEVELS)), node);
           }
         }
       }

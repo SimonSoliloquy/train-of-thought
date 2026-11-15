@@ -1,8 +1,8 @@
 // Standalone demo of the UI against a MOCK game and renderer (no wiki, world, sim or three.js).
-// Open /ui-demo.html. Options: ?fresh (single starting station, for the first-run hints),
-// ?skip (skip the start screen), ?fail (first start() rejects, to see the retry path).
+// Open /ui-demo.html. Options: ?fresh (single starting station, to see the first goals),
+// ?fail (the first start() rejects, to see "Try again"). The game starts by itself.
 import { createUI } from './index.js';
-import { ECON, TRAIN_TYPES, LINE_COLORS } from '../config.js';
+import { ECON, TRAIN_TYPES, TRACK_UPGRADES } from '../config.js';
 import { hexToWorld } from '../hex.js';
 
 const params = new URLSearchParams(location.search);
@@ -81,20 +81,23 @@ const GHOST_STUBS = {
   Boiler: ['article', 'Closed vessel in which fluid is heated'],
 };
 
+
 // ------------------------------------------------------------------ mock game
 
 function createMockGame() {
   const handlers = new Map();
   const emit = (name, payload) => { for (const fn of handlers.get(name) || []) fn(payload); };
+  const PERIOD = ECON.paydaySeconds;
   const state = {
     phase: 'idle', time: 0, speed: 1, money: ECON.startMoney, score: 0, inflation: 1,
-    incomePerMin: 0, upkeepPerMin: 0, faresPerMin: 0, delivered: 0, lost: 0, uniqueLinks: 0, bankruptIn: null,
-    unlockedTrainTypes: ['local'], nextMilestone: { uniqueLinks: 400, unlock: 'express' },
-    stations: new Map(), stubs: new Map(), tracks: [], lines: [], trains: [], thoughts: [],
+    payday: { period: PERIOD, in: PERIOD, income: 0, fares: 0, upkeep: 0, pending: 0, forecast: 0, last: null },
+    goal: null, streak: 0,
+    delivered: 0, lost: 0, reputation: ECON.reputationStart, uniqueLinks: 0, bankruptIn: null,
+    stations: new Map(), stubs: new Map(), tracks: [], trains: [], thoughts: [],
   };
   const placements = new Map();
   let nextId = 1;
-  let spawnIn = 8;
+  let spawnIn = 6;
   let negFor = 0;
   let failFirst = params.has('fail');
 
@@ -130,12 +133,6 @@ function createMockGame() {
       total += u;
     }
     state.uniqueLinks = total;
-    if (total >= 400 && !state.unlockedTrainTypes.includes('express')) {
-      state.unlockedTrainTypes = [...state.unlockedTrainTypes, 'express'];
-      state.nextMilestone = { uniqueLinks: 1000, unlock: 'hauler' };
-      if (state.phase === 'running') emit('milestone', { unlock: 'express', uniqueLinks: total });
-    }
-    state.incomePerMin = [...state.stations.values()].reduce((s, st) => s + st.incomePerMin, 0);
   }
 
   function addBuilt(title, q, r, parent) {
@@ -173,7 +170,7 @@ function createMockGame() {
     for (let i = 0; i <= len; i++) {
       let kind = 'ground';
       if (i > 0 && i < len) {
-        if (style === 'cheap') { if ((i + salt) % 7 === 3) kind = 'ledge'; }
+        if (style === 'cheap') { if ((i + salt) % 7 === 3) kind = 'ledge'; else if ((i + salt) % 11 === 5) kind = 'bridge'; }
         else if ((i + salt) % 5 === 2) kind = 'bridge';
         else if ((i + salt) % 9 === 5) kind = 'tunnel';
       }
@@ -193,6 +190,65 @@ function createMockGame() {
     return { style: route.style, route, trackCost, stationCost, total, affordable: total <= state.money };
   }
 
+  // income and upkeep per game second, from the current network
+  function rates() {
+    const income = [...state.stations.values()].reduce((s, st) => s + st.incomePerMin, 0) / 60;
+    const upkeep = (state.tracks.reduce((s, tr) => s + tr.route.length * ECON.trackUpkeepPerHexPerMin, 0)
+      + state.trains.reduce((s, tr) => s + TRAIN_TYPES[tr.typeId].upkeepPerMin, 0)) * state.inflation / 60;
+    return { income, upkeep };
+  }
+
+  function refreshForecast() {
+    const p = state.payday;
+    const r = rates();
+    p.pending = p.income + p.fares - p.upkeep;
+    p.forecast = p.pending + (r.income - r.upkeep) * p.in;
+  }
+
+  function upgradeOptions(track) {
+    return TRACK_UPGRADES[track.level].map((id) => {
+      const t = TRAIN_TYPES[id];
+      const cost = Math.round(t.cost * state.inflation);
+      return { typeId: id, name: t.name, blurb: t.blurb, cost, affordable: cost <= state.money };
+    });
+  }
+
+  // ---- goals: a few that teach the game in order, then ones that repeat and grow
+  const GOAL_DEFS = [
+    { id: 'station', text: 'Build a station', how: 'Click a signpost on the map, then press Build', target: () => 1, count: () => state.stations.size },
+    { id: 'train', text: 'Put a train on a track', how: 'Click the price tag on a track', target: () => 1, count: () => state.trains.length },
+    { id: 'deliver3', text: 'Deliver 3 passengers', how: 'Passengers ride a train to the station they want', target: () => 3, count: () => state.delivered },
+    { id: 'upgrade', text: 'Upgrade a track', how: 'Click the price tag on a track with a train', target: () => 1, count: () => state.tracks.filter((t) => t.level >= 2).length },
+  ];
+  let goalIndex = -1;
+  let goalBase = 0;
+  function defFor(i) {
+    if (i < GOAL_DEFS.length) return GOAL_DEFS[i];
+    const k = i - GOAL_DEFS.length;
+    return k % 2 === 0
+      ? { id: 'deliverN', text: `Deliver ${5 + k * 2} passengers`, how: 'Keep trains running to the stations passengers want', target: () => 5 + k * 2, count: () => state.delivered }
+      : { id: 'reachN', text: `Reach ${state.stations.size + 2} stations`, how: 'Build more stations from the signposts', target: (() => { const n = state.stations.size + 2; return () => n; })(), count: () => state.stations.size };
+  }
+  function startGoal(i) {
+    goalIndex = i;
+    const d = defFor(i);
+    const base = d.id === 'reachN' ? 0 : d.count(); // goals count what happens from now on
+    goalBase = base;
+    state.goal = { id: d.id, text: d.text, how: d.how, progress: Math.max(0, d.count() - base), target: d.target(), reward: ECON.goalRewardBase + i * 50 };
+  }
+  function updateGoal() {
+    const g = state.goal;
+    if (!g) return;
+    const d = defFor(goalIndex);
+    g.progress = Math.min(g.target, Math.max(0, d.count() - goalBase));
+    if (g.progress >= g.target) {
+      const done = { ...g };
+      state.money += g.reward;
+      startGoal(goalIndex + 1);
+      emit('goalDone', { goal: done, reward: done.reward, next: state.goal });
+    }
+  }
+
   const game = {
     state,
     on(name, fn) {
@@ -202,7 +258,7 @@ function createMockGame() {
     },
     async start() {
       state.phase = 'loading';
-      await sleep(900);
+      await sleep(1200);
       if (failFirst) {
         failFirst = false;
         state.phase = 'idle';
@@ -211,9 +267,10 @@ function createMockGame() {
       addBuilt('Rail transport', 0, 0, null);
       ghostRing('Rail transport', 10);
       if (!params.has('fresh')) seedRichGame();
+      startGoal(params.has('fresh') ? 0 : 2);
+      refreshForecast();
       state.phase = 'running';
       emit('started', { station: state.stations.get('Rail transport') });
-      emit('toast', { text: 'Welcome aboard. Click your station to begin.', tone: 'info' });
     },
     update(dt) {
       if (state.phase !== 'running') return;
@@ -221,10 +278,20 @@ function createMockGame() {
       if (t <= 0) return;
       state.time += t;
       state.inflation = 1 + ECON.inflationRate * Math.pow(state.time / 60, ECON.inflationExponent);
-      state.upkeepPerMin = (state.tracks.reduce((s, tr) => s + tr.route.length, 0) * ECON.trackUpkeepPerHexPerMin
-        + state.trains.reduce((s, tr) => s + TRAIN_TYPES[tr.typeId].upkeepPerMin, 0)) * state.inflation;
-      state.faresPerMin = state.trains.length ? 18 * state.trains.length + 4 * Math.sin(state.time / 7) : 0;
-      state.money += ((state.incomePerMin + state.faresPerMin - state.upkeepPerMin) / 60) * t;
+      const p = state.payday;
+      const r = rates();
+      p.income += r.income * t;
+      p.upkeep += r.upkeep * t;
+      p.in -= t;
+      while (p.in <= 0) {
+        p.in += p.period;
+        const amount = p.income + p.fares - p.upkeep;
+        state.money += amount;
+        p.last = { amount, income: p.income, fares: p.fares, upkeep: p.upkeep, time: state.time };
+        emit('payday', { amount, income: p.income, fares: p.fares, upkeep: p.upkeep });
+        p.income = p.fares = p.upkeep = 0;
+      }
+      refreshForecast();
       state.score = Math.round(state.delivered * 10 + state.stations.size * 25 + state.uniqueLinks * 0.1);
       state.bankruptIn = null;
       if (state.money < 0) {
@@ -237,6 +304,8 @@ function createMockGame() {
       for (const th of state.thoughts.filter((x) => x.patience <= 0)) {
         remove(state.thoughts, th);
         state.lost++;
+        state.streak = 0;
+        state.reputation = Math.max(0, state.reputation - ECON.reputationPerLost);
         const st = state.stations.get(th.from);
         if (st) st.waiting = st.waiting.filter((id) => id !== th.id);
         emit('thoughtLost', { thought: th });
@@ -245,14 +314,20 @@ function createMockGame() {
         const frac = Math.max(0, th.patience / th.patienceMax);
         th.fare = Math.round(th.baseFare * (ECON.fareMinFraction + (1 - ECON.fareMinFraction) * frac));
       }
+      // each running train delivers a waiting passenger now and then
       for (const tr of state.trains) {
-        if (Math.random() < t * 0.4) {
-          const cap = TRAIN_TYPES[tr.typeId].capacity;
-          tr.passengers = Array.from({ length: Math.floor(Math.random() * (cap + 1)) }, (_, i) => i);
+        tr.carry = (tr.carry || 0) + t;
+        if (tr.carry > 9 / TRAIN_TYPES[tr.typeId].speed * 1.6) {
+          tr.carry = 0;
+          const track = state.tracks.find((x) => x.id === tr.trackId);
+          const th = state.thoughts.find((x) => x.state === 'waiting' && (x.at === track.from || x.at === track.to));
+          if (th) deliver(th, th.at === track.from ? track.to : track.from);
         }
+        tr.passengers = Array.from({ length: Math.floor((Math.sin(state.time / 5 + tr.id) + 1) * 1.6) }, (_, i) => i);
       }
       spawnIn -= t;
-      if (spawnIn <= 0) { spawnIn = 14; spawnThought(); }
+      if (spawnIn <= 0) { spawnIn = 12; spawnThought(); }
+      updateGoal();
     },
     setSpeed(s) { state.speed = s; },
     quoteBuild(from, to) {
@@ -265,16 +340,14 @@ function createMockGame() {
       if (game.trackBetween(from, to)) return { ok: false, reason: 'Track already joins these stations.' };
       const cheap = quote(makeRoute(from, to, 'cheap'), to);
       const direct = quote(makeRoute(from, to, 'direct'), to);
-      const same = hash(from + to) % 5 === 0;
-      if (same) return { ok: true, cheap, direct: { ...cheap, style: 'direct' }, same: true };
       return { ok: true, cheap, direct, same: false };
     },
-    async build(from, to, style) {
+    async build(from, to, style = 'cheap') {
       await sleep(500);
       const q = game.quoteBuild(from, to);
       if (!q.ok) return q;
       const pick = style === 'direct' ? q.direct : q.cheap;
-      if (pick.total > state.money) return { ok: false, reason: `Not enough cash: ${pick.total} needed.` };
+      if (pick.total > state.money) return { ok: false, reason: `Not enough gold: ${pick.total} needed.` };
       state.money -= pick.total;
       const ghost = !state.stations.has(to);
       if (ghost) {
@@ -282,14 +355,19 @@ function createMockGame() {
         p.state = 'built';
         addBuilt(to, p.q, p.r, from);
       }
-      const track = { id: nextId++, from, to, route: pick.route };
+      const track = { id: nextId++, from, to, route: pick.route, level: 0, typeId: null, trainId: null };
       state.tracks.push(track);
       if (ghost) {
+        const waiting = state.thoughts.filter((x) => x.state === 'waiting' && x.to === to);
+        const amount = Math.round(waiting.reduce((n, x) => n + x.fare, 0) * ECON.routeBonusFraction);
         emit('stationBuilt', { station: state.stations.get(to), track });
         ghostRing(to, 8);
+        if (waiting.length) {
+          state.money += amount;
+          emit('routeBonus', { station: to, count: waiting.length, amount });
+        }
       }
       emit('trackBuilt', { track });
-      if (state.uniqueLinks >= 150) emit('toast', { text: `${to} added ${state.stations.get(to).uniqueLinks} unique links.`, tone: 'good' });
       return { ok: true };
     },
     async survey(from, link) {
@@ -304,49 +382,28 @@ function createMockGame() {
       }
       return { ok: true };
     },
-    createLine(stations) {
-      const bad = checkLine(stations);
-      if (bad) return bad;
-      const line = { id: nextId++, name: `Line ${state.lines.length + 1}`, color: LINE_COLORS[state.lines.length % LINE_COLORS.length], stations: stations.slice(), trainIds: [] };
-      state.lines.push(line);
-      emit('linesChanged', {});
-      return { ok: true, line };
+    quoteUpgrade(trackId) {
+      const track = state.tracks.find((t) => t.id === trackId);
+      if (!track) return { ok: false, reason: 'No such track.' };
+      const options = upgradeOptions(track);
+      return options.length ? { ok: true, options } : { ok: false, reason: 'This track is fully upgraded.' };
     },
-    setLineStations(lineId, stations) {
-      const line = state.lines.find((l) => l.id === lineId);
-      if (!line) return { ok: false, reason: 'That line no longer exists.' };
-      const bad = checkLine(stations);
-      if (bad) return bad;
-      line.stations = stations.slice();
-      emit('linesChanged', {});
-      return { ok: true };
-    },
-    deleteLine(lineId) {
-      const line = state.lines.find((l) => l.id === lineId);
-      if (!line) return { ok: false, reason: 'That line no longer exists.' };
-      for (const id of line.trainIds.slice()) removeTrain(id, false);
-      remove(state.lines, line);
-      emit('trainsChanged', {});
-      emit('linesChanged', {});
-      return { ok: true };
-    },
-    buyTrain(typeId, lineId) {
-      const line = state.lines.find((l) => l.id === lineId);
-      const type = TRAIN_TYPES[typeId];
-      if (!line || !type) return { ok: false, reason: 'Unknown line or train type.' };
-      const price = Math.round(type.cost * state.inflation);
-      if (state.money < price) return { ok: false, reason: `A ${type.name} costs $${price}; you have $${Math.floor(state.money)}.` };
-      state.money -= price;
-      const track = game.trackBetween(line.stations[0], line.stations[1]);
-      const train = { id: nextId++, typeId, lineId, state: 'moving', trackId: track ? track.id : 0, t: 0.2, forward: true, atStation: line.stations[0], passengers: [] };
+    upgradeTrack(trackId, typeId) {
+      const track = state.tracks.find((t) => t.id === trackId);
+      if (!track) return { ok: false, reason: 'No such track.' };
+      const options = upgradeOptions(track);
+      if (!options.length) return { ok: false, reason: 'This track is fully upgraded.' };
+      const opt = typeId ? options.find((o) => o.typeId === typeId) : options.length === 1 ? options[0] : null;
+      if (!opt) return { ok: false, reason: 'Choose which train to put on this track.' };
+      if (opt.cost > state.money) return { ok: false, reason: `A ${opt.name} costs $${opt.cost}; you have $${Math.floor(state.money)}.` };
+      state.money -= opt.cost;
+      if (track.trainId != null) remove(state.trains, state.trains.find((t) => t.id === track.trainId));
+      const train = { id: nextId++, typeId: opt.typeId, trackId: track.id, state: 'moving', t: 0.2, forward: true, atStation: track.from, passengers: [] };
       state.trains.push(train);
-      line.trainIds.push(train.id);
-      emit('trainsChanged', {});
-      return { ok: true, train };
-    },
-    sellTrain(trainId) {
-      if (!state.trains.some((t) => t.id === trainId)) return { ok: false, reason: 'That train is already gone.' };
-      removeTrain(trainId, true);
+      track.level++;
+      track.typeId = opt.typeId;
+      track.trainId = train.id;
+      emit('trackUpgraded', { track, train });
       emit('trainsChanged', {});
       return { ok: true };
     },
@@ -355,39 +412,39 @@ function createMockGame() {
     },
   };
 
-  function checkLine(stations) {
-    if (stations.length < 2) return { ok: false, reason: 'A line needs at least two stations.' };
-    for (let i = 1; i < stations.length; i++) {
-      if (!game.trackBetween(stations[i - 1], stations[i])) return { ok: false, reason: `No track joins ${stations[i - 1]} and ${stations[i]}.` };
-    }
-    return null;
-  }
   function remove(arr, x) { const i = arr.indexOf(x); if (i >= 0) arr.splice(i, 1); }
-  function removeTrain(id, refund) {
-    const t = state.trains.find((x) => x.id === id);
-    if (!t) return;
-    remove(state.trains, t);
-    const line = state.lines.find((l) => l.id === t.lineId);
-    if (line) line.trainIds = line.trainIds.filter((x) => x !== id);
-    if (refund) state.money += TRAIN_TYPES[t.typeId].cost * ECON.sellRefund;
+
+  function deliver(th, station) {
+    remove(state.thoughts, th);
+    const st = state.stations.get(th.at);
+    if (st) st.waiting = st.waiting.filter((id) => id !== th.id);
+    state.delivered++;
+    state.streak++;
+    state.reputation = Math.min(1, state.reputation + ECON.reputationPerDelivery);
+    const fare = Math.round(th.fare * (1 + Math.min(ECON.streakFareMax, ECON.streakFarePerStep * (state.streak - 1))));
+    state.payday.fares += fare;
+    emit('thoughtDelivered', { thought: th, fare, station, streak: state.streak });
+  }
+
+  function mkThought(from, to, desc, hops, patience) {
+    const th = {
+      id: nextId++, from, to, toDescription: desc, hops, baseFare: Math.round(ECON.fareBase + ECON.farePerHop * Math.pow(hops, ECON.fareHopExponent)), fare: 0,
+      patience, patienceMax: ECON.patienceBase + ECON.patiencePerHop * hops, state: 'waiting', at: from, trainId: null,
+    };
+    th.fare = th.baseFare;
+    state.thoughts.push(th);
+    state.stations.get(from).waiting.push(th.id);
+    return th;
   }
 
   function spawnThought() {
     const built = [...state.stations.keys()];
     const from = built[Math.floor(Math.random() * built.length)];
-    const pool = ['Industrial Revolution', 'Maglev', 'James Watt', 'Diesel engine', 'Rapid transit', 'Thermodynamics', 'Tram', 'Boiler'];
+    const pool = ['Industrial Revolution', 'Maglev', 'James Watt', 'Diesel engine', 'Rapid transit', 'Thermodynamics', 'Tram', 'Boiler', 'Steam engine'];
     const to = pool[Math.floor(Math.random() * pool.length)];
     if (to === from) return;
     const hops = 2 + Math.floor(Math.random() * 3);
-    const th = {
-      id: nextId++, from, to, toDescription: (GHOST_STUBS[to] && GHOST_STUBS[to][1]) || (to === 'Industrial Revolution' ? 'Transition to new manufacturing processes, c. 1760-1840' : ''),
-      hops, fare: 0, baseFare: Math.round(ECON.fareBase + ECON.farePerHop * Math.pow(hops, ECON.fareHopExponent)),
-      patience: ECON.patienceBase + ECON.patiencePerHop * hops, patienceMax: ECON.patienceBase + ECON.patiencePerHop * hops,
-      state: 'waiting', at: from, trainId: null,
-    };
-    th.fare = th.baseFare;
-    state.thoughts.push(th);
-    state.stations.get(from).waiting.push(th.id);
+    const th = mkThought(from, to, (GHOST_STUBS[to] && GHOST_STUBS[to][1]) || (to === 'Industrial Revolution' ? 'Transition to new manufacturing processes, c. 1760-1840' : ''), hops, ECON.patienceBase + ECON.patiencePerHop * hops);
     emit('thoughtSpawned', { thought: th });
   }
 
@@ -401,41 +458,35 @@ function createMockGame() {
     addBuilt('Steam engine', 9, -1, 'Locomotive');
     ghostRing('Locomotive', 6);
     ghostRing('Steam engine', 5);
-    const t1 = { id: nextId++, from: 'Rail transport', to: 'Locomotive', route: makeRoute('Rail transport', 'Locomotive', 'cheap') };
-    const t2 = { id: nextId++, from: 'Locomotive', to: 'Steam engine', route: makeRoute('Locomotive', 'Steam engine', 'direct') };
+    const t1 = { id: nextId++, from: 'Rail transport', to: 'Locomotive', route: makeRoute('Rail transport', 'Locomotive', 'cheap'), level: 0, typeId: null, trainId: null };
+    const t2 = { id: nextId++, from: 'Locomotive', to: 'Steam engine', route: makeRoute('Locomotive', 'Steam engine', 'cheap'), level: 0, typeId: null, trainId: null };
     state.tracks.push(t1, t2);
-    state.money = 840;
     state.time = 190;
     state.delivered = 7;
-    const res = game.createLine(['Rail transport', 'Locomotive', 'Steam engine']);
-    game.buyTrain('local', res.line.id);
-    game.buyTrain('local', res.line.id);
-    state.money = 840;
-    const mk = (from, to, desc, hops, patience) => {
-      const th = {
-        id: nextId++, from, to, toDescription: desc, hops, baseFare: 15 + 20 * Math.pow(hops, 1.4), fare: 0,
-        patience, patienceMax: 150 + 60 * hops, state: 'waiting', at: from, trainId: null,
-      };
-      th.fare = th.baseFare;
-      state.thoughts.push(th);
-      state.stations.get(from).waiting.push(th.id);
-    };
-    mk('Rail transport', 'Industrial Revolution', 'Transition to new manufacturing processes, c. 1760-1840', 3, 190);
-    mk('Rail transport', 'Steam engine', 'Engine that performs mechanical work using steam as its working fluid', 1, 70);
-    mk('Locomotive', 'Maglev', 'Train system using magnetic levitation', 2, 140);
-    mk('Steam engine', 'Diesel locomotive', 'Locomotive powered by a diesel engine', 2, 38);
-    mk('Locomotive', 'Cheese', '', 4, 300);
-    state.trains[0].passengers = [1];
+    state.money = 640;
+    state.payday.last = { amount: 87, income: 3, fares: 95, upkeep: 11, time: 180 };
+    game.upgradeTrack(t1.id, 'local');
+    state.money = 640;
+    mkThought('Rail transport', 'Industrial Revolution', 'Transition to new manufacturing processes, c. 1760-1840', 3, 190);
+    mkThought('Rail transport', 'Steam engine', 'Engine that performs mechanical work using steam as its working fluid', 1, 70);
+    mkThought('Locomotive', 'Maglev', 'Train system using magnetic levitation', 2, 140);
+    mkThought('Steam engine', 'Diesel locomotive', 'Locomotive powered by a diesel engine', 2, 38);
+    mkThought('Locomotive', 'Cheese', '', 4, 300);
     const riding = state.thoughts[1];
     riding.state = 'riding';
+    riding.at = null;
     riding.trainId = state.trains[0].id;
   }
 
   game.placements = placements;
+  game.upgradeOptions = (track) => upgradeOptions(track);
   game.debug = {
     bankrupt() { state.money = -100; negFor = ECON.bankruptcyGraceSeconds - 8; },
-    unlock() { state.unlockedTrainTypes = ['local', 'express']; state.nextMilestone = { uniqueLinks: 1000, unlock: 'hauler' }; emit('milestone', { unlock: 'express', uniqueLinks: 400 }); },
     cash() { state.money += 1000; },
+    finishGoal() { if (state.goal) { state.goal.target = Math.max(1, state.goal.target); goalBase -= state.goal.target; updateGoal(); } },
+    streak() { const th = state.thoughts.find((x) => x.state === 'waiting'); if (th) deliver(th, th.at); },
+    lose() { const th = state.thoughts[0]; if (th) { th.patience = 0; } },
+    payday() { state.payday.in = 0.01; },
   };
   return game;
 }
@@ -444,58 +495,92 @@ function createMockGame() {
 
 function createMockRenderer(game, mapEl, logEl) {
   const pickers = new Set();
-  const log = { selection: null, preview: null, highlight: null, follow: null, focus: null };
+  const log = { selection: null, preview: null, follow: null, focus: null, thought: null };
   const paint = () => {
-    const p = log.preview ? `${log.preview.routes.length} route(s), active ${log.preview.active}` : 'none';
-    logEl.textContent = `selection: ${log.selection ?? '-'}  |  preview: ${p}  |  line highlight: ${log.highlight ?? '-'}  |  follow: ${log.follow ?? '-'}  |  focus: ${log.focus ?? '-'}`;
+    const p = log.preview ? `${log.preview.routes.length} route(s)` : 'none';
+    logEl.textContent = `ring: ${log.selection ?? '-'}  |  route preview: ${p}  |  follow: ${log.follow ?? '-'}  |  focus: ${log.focus ?? '-'}  |  thought: ${log.thought ?? '-'}`;
   };
   const renderer = {
     update() {},
     onPick(h) { pickers.add(h); return () => pickers.delete(h); },
     setSelection(t) { log.selection = t; paint(); drawMap(); },
-    setRoutePreview(routes, active) { log.preview = routes && routes.length ? { routes, active: active || 'cheap' } : null; paint(); },
-    setLineHighlight(id) { log.highlight = id; paint(); },
+    setThoughtSelection(id) { log.thought = id; paint(); },
+    setRoutePreview(routes, active) { log.preview = routes && routes.length ? { routes, active: active || 'cheap' } : null; paint(); drawMap(); },
     focus(t) { log.focus = t; paint(); },
     follow(id) { log.follow = id; paint(); },
     dispose() {},
     // demo only
     pick(p) { for (const h of pickers) h(p); },
+    log,
   };
 
-  // A rough SVG map so clicking something feels like clicking the 3D view.
+  // A rough SVG map so clicking something feels like clicking the 3D view. Like the real view
+  // it draws only built stations, tracks, upgrade tags, and (for the selected station) signposts.
   const NS = 'http://www.w3.org/2000/svg';
+  const el = (name, attrs) => {
+    const e = document.createElementNS(NS, name);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    return e;
+  };
+  const pos = (t) => { const p = game.placements.get(t); return hexToWorld(p.q, p.r); };
+  function signposts() {
+    const sel = log.selection && game.state.stations.get(log.selection);
+    if (!sel) return [];
+    return sel.article.leadLinks.filter((t) => game.placements.has(t) && !game.state.stations.has(t));
+  }
   function drawMap() {
     mapEl.textContent = '';
-    const svg = document.createElementNS(NS, 'svg');
-    svg.setAttribute('width', '100%');
-    svg.setAttribute('height', '100%');
+    const svg = el('svg', { width: '100%', height: '100%' });
     svg.addEventListener('click', (e) => { if (e.target === svg) renderer.pick({ kind: 'none' }); });
-    const g = document.createElementNS(NS, 'g');
-    const cx = innerWidth * 0.5 - 120, cy = innerHeight * 0.5;
-    g.setAttribute('transform', `translate(${cx},${cy}) scale(26)`);
-    const pos = (t) => { const p = game.placements.get(t); return hexToWorld(p.q, p.r); };
-    for (const tr of game.state.tracks) {
-      const a = pos(tr.from), b = pos(tr.to);
-      const l = document.createElementNS(NS, 'line');
-      l.setAttribute('x1', a.x); l.setAttribute('y1', a.z); l.setAttribute('x2', b.x); l.setAttribute('y2', b.z);
-      l.setAttribute('stroke', '#3a2a1a'); l.setAttribute('stroke-width', '0.28');
-      g.append(l);
+    const g = el('g', { transform: `translate(${innerWidth * 0.5 - 120},${innerHeight * 0.5}) scale(26)` });
+    const st = game.state;
+    if (log.preview) {
+      for (const r of log.preview.routes) {
+        const pts = r.hexes.map((h) => { const w = hexToWorld(h.q, h.r); return `${w.x},${w.z}`; }).join(' ');
+        g.append(el('polyline', { points: pts, fill: 'none', stroke: '#ffbf3f', 'stroke-width': 0.3, 'stroke-dasharray': '0.5 0.35' }));
+      }
     }
-    for (const [title, p] of game.placements) {
-      const w = hexToWorld(p.q, p.r);
-      const built = p.state === 'built';
-      const c = document.createElementNS(NS, 'circle');
-      c.setAttribute('cx', w.x); c.setAttribute('cy', w.z); c.setAttribute('r', built ? 0.8 : 0.55);
-      c.setAttribute('fill', built ? '#f7f2e4' : 'rgba(255,255,255,0.25)');
-      c.setAttribute('stroke', title === log.selection ? '#ffbf3f' : built ? '#1b2a44' : '#ffffff');
-      c.setAttribute('stroke-width', title === log.selection ? 0.28 : 0.12);
-      c.style.cursor = 'pointer';
-      c.addEventListener('click', (e) => { e.stopPropagation(); renderer.pick({ kind: built ? 'station' : 'ghost', title }); });
-      const tx = document.createElementNS(NS, 'text');
-      tx.setAttribute('x', w.x); tx.setAttribute('y', w.z + 1.7); tx.setAttribute('text-anchor', 'middle');
-      tx.setAttribute('font-size', '0.8'); tx.setAttribute('fill', '#10241a'); tx.setAttribute('pointer-events', 'none');
+    for (const tr of st.tracks) {
+      const a = pos(tr.from), b = pos(tr.to);
+      g.append(el('line', { x1: a.x, y1: a.z, x2: b.x, y2: b.z, stroke: tr.level ? '#e4572e' : '#3a2a1a', 'stroke-width': 0.28 }));
+      // upgrade tags, like the ones the 3D view floats over each track
+      const opts = game.upgradeOptions(tr);
+      opts.forEach((o, i) => {
+        const mx = (a.x + b.x) / 2 + (i - (opts.length - 1) / 2) * 3.4, my = (a.z + b.z) / 2 - 0.9;
+        const tag = el('g', { style: 'cursor:pointer' });
+        tag.append(el('rect', { x: mx - 1.6, y: my - 0.55, width: 3.2, height: 1.1, rx: 0.2, fill: o.affordable ? '#ffbf3f' : '#5a5a5a' }));
+        const tx = el('text', { x: mx, y: my + 0.2, 'text-anchor': 'middle', 'font-size': 0.62, fill: '#1a1405', 'pointer-events': 'none' });
+        tx.textContent = `${o.name} $${o.cost}`;
+        tag.append(tx);
+        tag.addEventListener('click', (e) => { e.stopPropagation(); renderer.pick({ kind: 'upgrade', trackId: tr.id, typeId: o.typeId }); });
+        g.append(tag);
+      });
+      if (tr.trainId != null) {
+        const tx = el('circle', { cx: (a.x + b.x) / 2, cy: (a.z + b.z) / 2, r: 0.55, fill: TRAIN_TYPES[tr.typeId].color, stroke: '#fff', 'stroke-width': 0.1, style: 'cursor:pointer' });
+        tx.addEventListener('click', (e) => { e.stopPropagation(); renderer.pick({ kind: 'train', trainId: tr.trainId }); });
+        g.append(tx);
+      }
+    }
+    for (const [title, s] of st.stations) {
+      const w = hexToWorld(s.q, s.r);
+      const c = el('circle', {
+        cx: w.x, cy: w.z, r: 0.85, fill: '#f7f2e4', stroke: title === log.selection ? '#ffbf3f' : '#1b2a44',
+        'stroke-width': title === log.selection ? 0.3 : 0.12, style: 'cursor:pointer',
+      });
+      c.addEventListener('click', (e) => { e.stopPropagation(); renderer.pick({ kind: 'station', title }); });
+      const tx = el('text', { x: w.x, y: w.z + 1.8, 'text-anchor': 'middle', 'font-size': 0.8, fill: '#10241a', 'pointer-events': 'none' });
       tx.textContent = title;
       g.append(c, tx);
+    }
+    for (const title of signposts()) {
+      const w = pos(title);
+      const post = el('g', { style: 'cursor:pointer' });
+      post.append(el('rect', { x: w.x - 2.4, y: w.z - 0.5, width: 4.8, height: 1, rx: 0.2, fill: title === log.selection ? '#ffbf3f' : '#17407a', stroke: '#fff', 'stroke-width': 0.08 }));
+      const tx = el('text', { x: w.x, y: w.z + 0.22, 'text-anchor': 'middle', 'font-size': 0.5, fill: '#fff', 'pointer-events': 'none' });
+      tx.textContent = title.length > 22 ? title.slice(0, 21) + '…' : title;
+      post.append(tx);
+      post.addEventListener('click', (e) => { e.stopPropagation(); renderer.pick({ kind: 'ghost', title }); });
+      g.append(post);
     }
     svg.append(g);
     mapEl.append(svg);
@@ -507,7 +592,6 @@ function createMockRenderer(game, mapEl, logEl) {
 
 // ------------------------------------------------------------------ boot
 
-const view = document.getElementById('view');
 const mapEl = document.getElementById('map');
 const log = document.getElementById('log');
 const bar = document.getElementById('bar');
@@ -526,22 +610,31 @@ function drawBar() {
     bar.append(b);
   };
   const lab = document.createElement('span');
-  lab.textContent = 'Fake map pick:';
+  lab.textContent = 'Fake picks:';
   bar.append(lab);
-  for (const [title, p] of game.placements) {
-    add(`${p.state === 'built' ? '●' : '○'} ${title}`, () => renderer.pick({ kind: p.state === 'built' ? 'station' : 'ghost', title }));
+  for (const title of game.state.stations.keys()) add(`● ${title}`, () => renderer.pick({ kind: 'station', title }));
+  const sel = renderer.log.selection;
+  const st = sel && game.state.stations.get(sel);
+  if (st) for (const t of st.article.leadLinks.filter((x) => game.placements.has(x) && !game.state.stations.has(x)).slice(0, 6)) add(`○ signpost: ${t}`, () => renderer.pick({ kind: 'ghost', title: t }));
+  for (const tr of game.state.tracks) {
+    for (const o of game.upgradeOptions(tr)) add(`tag: ${o.name} (track ${tr.id})`, () => renderer.pick({ kind: 'upgrade', trackId: tr.id, typeId: o.typeId }));
   }
   for (const t of game.state.trains) add(`train #${t.id}`, () => renderer.pick({ kind: 'train', trainId: t.id }));
+  for (const th of game.state.thoughts.filter((x) => x.state === 'waiting').slice(0, 2)) add(`passenger #${th.id}`, () => renderer.pick({ kind: 'thought', thoughtId: th.id }));
   add('empty space', () => renderer.pick({ kind: 'none' }));
   const sp = document.createElement('span');
   sp.className = 'sp';
   bar.append(sp);
   add('+$1000', () => game.debug.cash(), 'dbg');
-  add('unlock Express', () => game.debug.unlock(), 'dbg');
+  add('finish goal', () => game.debug.finishGoal(), 'dbg');
+  add('deliver one', () => game.debug.streak(), 'dbg');
+  add('lose one', () => game.debug.lose(), 'dbg');
+  add('payday now', () => game.debug.payday(), 'dbg');
   add('go bankrupt', () => game.debug.bankrupt(), 'dbg');
 }
-for (const ev of ['started', 'ghostsAdded', 'stationBuilt', 'trainsChanged']) game.on(ev, () => { drawBar(); renderer.redraw(); });
-game.on('trackBuilt', () => renderer.redraw());
+for (const ev of ['started', 'ghostsAdded', 'stationBuilt', 'trackBuilt', 'trackUpgraded', 'trainsChanged']) game.on(ev, () => { drawBar(); renderer.redraw(); });
+const origSel = renderer.setSelection;
+renderer.setSelection = (t) => { origSel(t); drawBar(); };
 drawBar();
 
 let last = performance.now();
@@ -554,5 +647,3 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-
-if (params.has('skip')) game.start();

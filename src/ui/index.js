@@ -3,11 +3,13 @@ import './styles.css';
 import { h } from './dom.js';
 import { createCtx } from './ctx.js';
 import { createHud } from './hud.js';
+import { createGoal } from './goal.js';
 import { createBoard } from './board.js';
 import { createCard } from './card.js';
-import { createLines } from './lines.js';
-import { createToasts, createHints } from './notes.js';
+import { createBuildCard } from './buildcard.js';
+import { createToasts, createRideLabel } from './notes.js';
 import { createScreens } from './screens.js';
+import { createSound } from './sound.js';
 
 const TICK = 0.1; // seconds between live-number refreshes
 const SPEED_KEYS = { 1: 1, 2: 2, 3: 4 };
@@ -20,108 +22,108 @@ export function createUI({ root, game, renderer }) {
   const ctx = createCtx({ game, renderer, toast: toasts.show });
 
   const hud = createHud(ctx);
+  const goal = createGoal(ctx);
   const board = createBoard(ctx);
   const card = createCard(ctx);
-  const lines = createLines(ctx);
-  const hints = createHints(ctx);
+  const buildCard = createBuildCard(ctx);
+  const rideLabel = createRideLabel(ctx);
   const screens = createScreens(ctx);
+  const sound = createSound({ game });
 
-  // Layout: HUD on top, a stack below it. The stack holds a middle area (board left, card
-  // right) and the lines panel along the bottom. Notes (banner, hint, toasts) float top centre.
-  const mid = h('div', { class: 'tot-mid' }, board.el, card.el);
-  const stack = h('div', { class: 'tot-stack' }, mid, lines.el);
-  const notes = h('div', { class: 'tot-notes' }, lines.banner, lines.rideBar, hints.el, toasts.el);
-  const app = h('div', { class: 'tot' }, hud.el, stack, notes, screens.el);
+  // Layout: gold readout top left, speed top right, the goal line top centre (its own row when
+  // narrow), then the stage under them. The stage holds the passenger queue (left), the side
+  // column (build card above station card, right; a bottom sheet when narrow) and the notes
+  // (riding label, toasts) floating top centre.
+  const side = h('div', { class: 'tot-side' }, buildCard.el, card.el);
+  const notes = h('div', { class: 'tot-notes' }, rideLabel.el, toasts.el);
+  const stage = h('div', { class: 'tot-stage' }, board.el, side, notes);
+  const app = h('div', { class: 'tot tot-root' }, hud.el, hud.speed, goal.el, stage, screens.el);
   app.dataset.phase = state.phase === 'gameOver' ? 'over' : state.phase;
   root.append(app);
 
   // ------------------------------------------------------------ dirty flags
   // Events only mark work; it is done at most once per frame in update().
-  const dirty = { board: false, card: false, lines: false, hints: false };
-  const off = [];
-  const on = (name, fn) => off.push(game.on(name, fn));
+  const dirty = { board: false, card: false, hud: false, goal: false };
+  const on = (name, fn) => game.on(name, fn);
 
   on('toast', (e) => toasts.show(e.text, e.tone));
-  on('milestone', (e) => {
-    toasts.milestone(e);
-    dirty.lines = true; // new train type may now be on sale
-  });
   on('started', (e) => {
-    dirty.board = dirty.card = dirty.lines = dirty.hints = true;
+    dirty.board = dirty.card = dirty.hud = dirty.goal = true;
     screens.render();
-    // Open the first station's card straight away: title, photo and intro text.
+    // Open the first station's card straight away: photo, title and intro text.
     if (e && e.station) ctx.select(e.station.title, { kind: 'station' });
   });
-  for (const name of ['stationBuilt', 'trackBuilt', 'ghostsAdded']) {
+  for (const name of ['stationBuilt', 'trackBuilt', 'ghostsAdded', 'trackUpgraded']) {
     on(name, () => {
-      dirty.board = dirty.card = dirty.hints = true;
+      dirty.board = dirty.card = dirty.goal = true;
     });
   }
   for (const name of ['thoughtSpawned', 'thoughtBoarded', 'thoughtDelivered', 'thoughtLost']) {
     on(name, () => {
-      dirty.board = true;
+      dirty.board = dirty.goal = true;
     });
   }
-  on('linesChanged', () => {
-    dirty.lines = true;
-    dirty.hints = true;
+  on('payday', (e) => {
+    hud.payday(e);
+    dirty.hud = true;
   });
-  on('trainsChanged', () => {
-    dirty.lines = true;
-    dirty.hints = true;
+  on('goalDone', (e) => {
+    goal.done(e);
+    hud.pulse();
+    dirty.hud = true;
+  });
+  on('routeBonus', () => {
+    hud.pulse();
+    dirty.hud = true;
   });
   on('gameOver', (e) => {
-    ctx.cancelAll();
+    ctx.stopRide();
+    ctx.deselect();
     screens.onGameOver(e);
   });
 
-  ctx.cancelAll = () => {
-    lines.cancel();
-    ctx.stopRide();
-    ctx.deselect();
-  };
-
   function flush() {
     if (dirty.board) { dirty.board = false; board.refresh(); }
-    if (dirty.card) { dirty.card = false; card.refresh(); }
-    if (dirty.lines) { dirty.lines = false; lines.refresh(); }
-    if (dirty.hints) { dirty.hints = false; hints.refresh(); }
+    if (dirty.card) { dirty.card = false; card.refresh(); buildCard.refresh(); }
+    if (dirty.hud) { dirty.hud = false; hud.update(); }
+    if (dirty.goal) { dirty.goal = false; goal.update(); }
   }
 
-  ctx.bus.on('selection', () => {
-    hints.refresh();
+  const sync = () => {
     app.classList.toggle('has-card', !!ctx.sel);
-  });
-  ctx.bus.on('mode', () => {
-    app.classList.toggle('drawing', !!ctx.mode);
-    hints.refresh();
-  });
+    app.classList.toggle('has-build', !!ctx.build);
+  };
+  ctx.bus.on('selection', sync);
+  ctx.bus.on('build', sync);
 
   // ------------------------------------------------------------ map picks
   const offPick = renderer.onPick((pick) => {
     if (state.phase !== 'running') return;
-    if (ctx.mode) {
-      // While drawing a line the map only adds stops; cards stay closed.
-      if (pick.kind === 'station') lines.addStop(pick.title);
-      else if (pick.kind === 'ghost') lines.note('Only built stations can be on a line.');
-      return;
-    }
     switch (pick.kind) {
       case 'station':
-      case 'ghost':
         ctx.select(pick.title);
+        break;
+      case 'ghost':
+        // A signpost: price building towards it from the station being viewed.
+        ctx.openBuild(pick.title, ctx.sel && ctx.sel.kind === 'station' ? ctx.sel.title : null);
         break;
       case 'thought':
         ctx.selectThought(pick.thoughtId);
         break;
+      case 'upgrade':
+        ctx.report(game.upgradeTrack(pick.trackId, pick.typeId));
+        dirty.goal = true;
+        break;
       case 'train':
-        lines.flashTrain(pick.trainId);
+        if (ctx.riding === pick.trainId) ctx.stopRide();
+        else ctx.startRide(pick.trainId);
         break;
       default:
+        ctx.stopRide();
         ctx.deselect();
     }
   });
-  off.push(offPick);
+  void offPick;
 
   // ------------------------------------------------------------ keyboard
   let lastSpeed = 1;
@@ -132,9 +134,8 @@ export function createUI({ root, game, renderer }) {
     const t = e.target;
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
     if (e.key === 'Escape') {
-      if (typing) return; // the filter box handles its own Escape
-      if (lines.cancel()) e.preventDefault();
-      else if (ctx.sel) { ctx.deselect(); e.preventDefault(); }
+      if (typing) return; // the search box handles its own Escape
+      if (ctx.back()) e.preventDefault();
       else if (ctx.riding != null) { ctx.stopRide(); e.preventDefault(); }
       return;
     }
@@ -146,6 +147,8 @@ export function createUI({ root, game, renderer }) {
       game.setSpeed(state.speed > 0 ? 0 : lastSpeed || 1);
     } else if (SPEED_KEYS[e.key]) {
       game.setSpeed(SPEED_KEYS[e.key]);
+    } else if (e.key === 'm' || e.key === 'M') {
+      toasts.show(sound.toggleMute() ? 'Sound off' : 'Sound on', 'info', 1400);
     }
   }
   window.addEventListener('keydown', onKey);
@@ -158,10 +161,11 @@ export function createUI({ root, game, renderer }) {
     const p = state.phase === 'gameOver' ? 'over' : state.phase;
     app.dataset.phase = p;
     screens.render();
-    if (p === 'running' || p === 'over') {
-      dirty.board = dirty.card = dirty.lines = dirty.hints = true;
-    }
+    if (p === 'running' || p === 'over') dirty.board = dirty.card = dirty.hud = dirty.goal = true;
   }
+
+  // No start button: the game starts as soon as the interface is up.
+  if (state.phase === 'idle') screens.begin();
 
   return {
     update(dt) {
@@ -176,10 +180,12 @@ export function createUI({ root, game, renderer }) {
       if (state.speed > 0) lastSpeed = state.speed;
       if (state.phase === 'idle' || state.phase === 'loading') return;
       hud.update();
+      goal.update();
       board.update();
       card.update();
-      lines.update();
-      hints.refresh();
+      buildCard.update();
+      rideLabel.update();
+      sound.update();
     },
   };
 }

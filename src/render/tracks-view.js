@@ -1,7 +1,8 @@
 // Built track meshes (one merged mesh per Track, drawn in arc-length order so it can
-// animate "laying itself"), route preview ribbons, and line highlight ribbons.
+// animate "laying itself"), the route preview ribbon, and the glow on tracks that
+// have an affordable upgrade.
 import * as THREE from 'three';
-import { buildTrack, buildRibbon, vertexCountAt, resample } from './track.js';
+import { buildTrack, buildRibbon, vertexCountAt, resample, gradeSegments } from './track.js';
 import { sampleRoute } from './rail.js';
 
 export class TracksView {
@@ -11,36 +12,78 @@ export class TracksView {
     this.previewGroup = new THREE.Group();
     this.previewGroup.name = 'route-preview';
     this.highlightGroup = new THREE.Group();
-    this.highlightGroup.name = 'line-highlight';
+    this.highlightGroup.name = 'upgrade-glow';
     parent.add(this.group, this.previewGroup, this.highlightGroup);
     this.materials = materials;
     this.terrain = terrain;
     this.fx = fx || null;
     this.tracks = new Map(); // id -> rec
     this.preview = [];
-    this.highlight = { lineId: null, key: '', meshes: [], material: null };
+    this.glows = new Map(); // track id -> {mesh, material, strength, target, hovered}
     this.time = 0;
     this.groundAt = (x, z) => terrain.groundAt(x, z);
+    this.naturalAt = (x, z) => (terrain.naturalAt ? terrain.naturalAt(x, z) : terrain.groundAt(x, z));
+    this.dirty = new Set(); // track ids whose geometry must follow a changed surface
+  }
+
+  _geometry(route) {
+    return buildTrack(route, { groundAt: this.groundAt, naturalAt: this.naturalAt });
+  }
+
+  /** The land changed inside box: refit piers, walls and portals of the tracks there. */
+  terrainChanged(box) {
+    for (const rec of this.tracks.values()) {
+      const b = rec.box;
+      if (!b || b.maxX < box.minX || b.minX > box.maxX || b.maxZ < box.minZ || b.minZ > box.maxZ) continue;
+      this.dirty.add(rec.id);
+    }
+  }
+
+  _refit(rec) {
+    const built = this._geometry(rec.track.route);
+    rec.mesh.geometry.dispose();
+    rec.mesh.geometry = built.builder.toGeometry();
+    rec.marks = built.marks;
+    rec.total = built.builder.vertexCount;
+    rec.portals = built.portals;
+    rec.buried = built.buried;
+  }
+
+  /**
+   * Whether arc length s along a track lies inside its tunnel (the same stretches the track
+   * mesh leaves out), or null when the track is not drawn.
+   */
+  buriedAt(id, s) {
+    const rec = this.tracks.get(id);
+    if (!rec || !rec.buried) return null;
+    for (const [a, b] of rec.buried) if (s >= a && s <= b) return true;
+    return false;
   }
 
   has(id) { return this.tracks.has(id); }
 
   add(track, animate) {
     if (!track || track.id == null || this.tracks.has(track.id) || !track.route || !Array.isArray(track.route.points) || track.route.points.length < 2) return;
-    const built = buildTrack(track.route, { groundAt: this.groundAt });
+    // grade the land under the line first, so piers and walls meet the final surface
+    if (this.terrain.setTrackGrade) this.terrain.setTrackGrade(track.id, gradeSegments(track.route, this.naturalAt));
+    const built = this._geometry(track.route);
     const geom = built.builder.toGeometry();
     const mesh = new THREE.Mesh(geom, this.materials.track);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.name = `track-${track.id}`;
     const total = built.builder.vertexCount;
-    const rec = { id: track.id, track, mesh, marks: built.marks, total, length: built.length, t: animate ? 0 : 1, dur: Math.min(1.8, Math.max(0.7, built.length * 0.09)) };
+    const box = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
+    for (const p of track.route.points) { box.minX = Math.min(box.minX, p.x); box.maxX = Math.max(box.maxX, p.x); box.minZ = Math.min(box.minZ, p.z); box.maxZ = Math.max(box.maxZ, p.z); }
+    box.minX -= 1; box.maxX += 1; box.minZ -= 1; box.maxZ += 1;
+    const rec = { id: track.id, track, mesh, box, portals: built.portals, buried: built.buried, marks: built.marks, total, length: built.length, t: animate ? 0 : 1, dur: Math.min(1.8, Math.max(0.7, built.length * 0.09)) };
+    this.dirty.delete(track.id);
     if (animate) geom.setDrawRange(0, 0);
     this.group.add(mesh);
     this.tracks.set(track.id, rec);
     // clear props off the line (not over tunnels: the mountain keeps its trees)
     const circles = [];
-    for (const p of resample(track.route, 0.22)) if (p.kind !== 'tunnel') circles.push({ x: p.x, z: p.z, r: 0.3 });
+    for (const p of resample(track.route, 0.22)) if (p.kind !== 'tunnel') circles.push({ x: p.x, z: p.z, r: 0.45 });
     this.terrain.block(circles);
   }
 
@@ -50,6 +93,8 @@ export class TracksView {
     this.group.remove(rec.mesh);
     rec.mesh.geometry.dispose();
     this.tracks.delete(id);
+    this._dropGlow(id);
+    if (this.terrain.setTrackGrade) this.terrain.setTrackGrade(id, null);
   }
 
   /** Reconcile with game.state.tracks. */
@@ -86,44 +131,51 @@ export class TracksView {
     });
   }
 
-  setHighlight(lineId, state) {
-    const lines = (state && state.lines) || [];
-    const tracks = (state && state.tracks) || [];
-    const line = lineId == null ? null : lines.find((l) => l.id === lineId);
-    const ids = [];
-    if (line && Array.isArray(line.stations)) {
-      for (let i = 0; i + 1 < line.stations.length; i++) {
-        const a = line.stations[i], b = line.stations[i + 1];
-        const tr = tracks.find((t) => (t.from === a && t.to === b) || (t.from === b && t.to === a));
-        if (tr) ids.push(tr.id);
+  /**
+   * Glow along tracks: wanted = Map(trackId -> {hovered:boolean}). Tracks not listed fade out.
+   */
+  setGlow(wanted) {
+    for (const [id, w] of wanted) {
+      const rec = this.tracks.get(id);
+      if (!rec) continue;
+      let g = this.glows.get(id);
+      if (!g) {
+        const material = new THREE.MeshBasicMaterial({
+          color: new THREE.Color('#ffc94a'), transparent: true, opacity: 0, depthWrite: false,
+          blending: THREE.AdditiveBlending, toneMapped: false, side: THREE.DoubleSide,
+        });
+        const bld = buildRibbon(rec.track.route, { width: 0.56, lift: 0.04, groundAt: this.groundAt, mode: 'highlight' });
+        const mesh = new THREE.Mesh(bld.toGeometry(), material);
+        mesh.renderOrder = 9;
+        mesh.frustumCulled = false;
+        this.highlightGroup.add(mesh);
+        g = { mesh, material, strength: 0 };
+        this.glows.set(id, g);
       }
+      g.target = 1;
+      g.hovered = !!w.hovered;
     }
-    const key = line ? `${line.id}|${line.color}|${ids.join(',')}` : '';
-    const h = this.highlight;
-    h.lineId = lineId;
-    if (key === h.key) return;
-    h.key = key;
-    for (const m of h.meshes) { this.highlightGroup.remove(m); m.geometry.dispose(); }
-    h.meshes = [];
-    if (h.material) { h.material.dispose(); h.material = null; }
-    if (!line) return;
-    h.material = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(line.color || '#ffffff'), transparent: true, opacity: 0.6, depthWrite: false,
-      blending: THREE.AdditiveBlending, toneMapped: false, side: THREE.DoubleSide,
-    });
-    for (const id of ids) {
-      const tr = tracks.find((t) => t.id === id);
-      const bld = buildRibbon(tr.route, { width: 0.5, lift: 0.045, groundAt: this.groundAt, mode: 'highlight' });
-      const mesh = new THREE.Mesh(bld.toGeometry(), h.material);
-      mesh.renderOrder = 9;
-      mesh.frustumCulled = false;
-      this.highlightGroup.add(mesh);
-      h.meshes.push(mesh);
-    }
+    for (const [id, g] of this.glows) if (!wanted.has(id)) { g.target = 0; g.hovered = false; }
+  }
+
+  _dropGlow(id) {
+    const g = this.glows.get(id);
+    if (!g) return;
+    this.highlightGroup.remove(g.mesh);
+    g.mesh.geometry.dispose();
+    g.material.dispose();
+    this.glows.delete(id);
   }
 
   update(dt) {
     this.time += dt;
+    for (const id of this.dirty) {
+      const rec = this.tracks.get(id);
+      if (!rec) { this.dirty.delete(id); continue; }
+      if (rec.t < 1) continue; // refit once it has finished laying itself
+      this._refit(rec);
+      this.dirty.delete(id);
+    }
     for (const rec of this.tracks.values()) {
       if (rec.t >= 1) continue;
       rec.t = Math.min(1, rec.t + dt / rec.dur);
@@ -137,13 +189,19 @@ export class TracksView {
     }
     const pulse = 0.5 + 0.5 * Math.sin(this.time * 3.2);
     for (const p of this.preview) p.mesh.material.opacity = p.active ? 0.72 + 0.24 * pulse : 0.3;
-    if (this.highlight.material) this.highlight.material.opacity = 0.42 + 0.3 * (0.5 + 0.5 * Math.sin(this.time * 2.4));
+    const pulse2 = 0.5 + 0.5 * Math.sin(this.time * 2.6);
+    for (const [id, g] of this.glows) {
+      g.strength += ((g.target || 0) - g.strength) * Math.min(1, dt * 5);
+      if (g.strength < 0.01 && !g.target) { this._dropGlow(id); continue; }
+      const base = g.hovered ? 0.7 + 0.2 * pulse2 : 0.14 + 0.18 * pulse2;
+      g.material.opacity = base * g.strength;
+    }
   }
 
   dispose() {
     for (const id of [...this.tracks.keys()]) this.remove(id);
     this.setPreview(null);
-    this.setHighlight(null, null);
+    for (const id of [...this.glows.keys()]) this._dropGlow(id);
     for (const g of [this.group, this.previewGroup, this.highlightGroup]) if (g.parent) g.parent.remove(g);
   }
 }

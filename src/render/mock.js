@@ -1,6 +1,6 @@
 // A small MOCK world + game that satisfy the contract in src/types.js, used by the
 // standalone render demo and by the Node smoke tests. No DOM, no three.js.
-import { WORLD, ECON, TRAIN_TYPES, LINE_COLORS } from '../config.js';
+import { WORLD, ECON, TRAIN_TYPES } from '../config.js';
 import { hexToWorld, worldToHex, hexKey, hexSpiral, hexDistance, hexRound, hashString, mulberry32 } from '../hex.js';
 
 // ------------------------------------------------------------ noise
@@ -280,20 +280,56 @@ export function createMockWorld({ seed = 7 } = {}) {
 
 // ------------------------------------------------------------ mock game
 
-export function createMockGame({ world, buildInterval = 1.1 }) {
+/** Lead links: the station's own ghosts and its track neighbours; links: those plus every other mock title. */
+export function mockLinks(title) {
+  const lead = [
+    ...MOCK_GHOSTS.filter((g) => g.parent === title).map((g) => g.title),
+    ...MOCK_TRACKS.filter(([a, b]) => a === title || b === title).map(([a, b]) => (a === title ? b : a)),
+  ];
+  const links = [...lead];
+  for (const m of [...MOCK_GHOSTS, ...MOCK_STATIONS]) if (m.title !== title && !links.includes(m.title)) links.push(m.title);
+  return { leadLinks: lead, links };
+}
+
+// Starting levels of the mock tracks once the network is built: bare, local, express
+// (offering the final choice), freight and bullet, so every tag and train shows up.
+export const MOCK_START_LEVELS = [2, 1, 3, 3, 0, 1];
+const FINALS = ['freight', 'bullet'];
+
+export function createMockGame({ world, buildInterval = 1.1, money = 400 }) {
   const handlers = new Map();
   const emit = (name, payload) => { for (const h of handlers.get(name) || []) h(payload); };
   const state = {
-    phase: 'idle', time: 0, speed: 1, money: ECON.startMoney, score: 0, inflation: 1,
-    incomePerMin: 0, upkeepPerMin: 0, faresPerMin: 0, delivered: 0, lost: 0, uniqueLinks: 0,
-    bankruptIn: null, unlockedTrainTypes: ['local', 'express', 'hauler'], nextMilestone: null,
-    stations: new Map(), stubs: new Map(), tracks: [], lines: [], trains: [], thoughts: [],
+    phase: 'idle', time: 0, speed: 1, money, score: 0, inflation: 1,
+    payday: { period: ECON.paydaySeconds, in: ECON.paydaySeconds, income: 0, fares: 0, upkeep: 0, pending: 0, forecast: 0, last: null },
+    delivered: 0, lost: 0, reputation: 0.5, uniqueLinks: 0, bankruptIn: null,
+    goal: null, streak: 0,
+    stations: new Map(), stubs: new Map(), tracks: [], trains: [], thoughts: [],
   };
+  // goals: the tutorial's "put a train on a track", then deliveries that grow
+  const GOALS = [
+    { id: 'first-train', text: 'Put a train on a track', how: 'Click "Add train" over a track', target: 1, reward: 100 },
+    { id: 'deliver-5', text: 'Deliver 5 passengers', how: 'Trains carry them for you', target: 5, reward: 150 },
+    { id: 'deliver-15', text: 'Deliver 15 passengers', how: 'Upgrade busy tracks', target: 15, reward: 250 },
+  ];
+  let goalIndex = 0;
+  const makeGoal = (i) => (GOALS[i] ? { ...GOALS[i], progress: 0 } : null);
+  state.goal = makeGoal(0);
+  function advanceGoal(amount = 1) {
+    const g = state.goal;
+    if (!g) return;
+    g.progress = Math.min(g.target, g.progress + amount);
+    if (g.progress < g.target) return;
+    state.money += g.reward;
+    goalIndex++;
+    state.goal = makeGoal(goalIndex);
+    emit('goalDone', { goal: g, reward: g.reward, next: state.goal });
+  }
   let nextId = 1;
   let timeline = 0;
   let built = 1;
   let spawnT = 1.5, deliverT = 3;
-  const runs = new Map(); // trainId -> {seg, dir, p, dwell}
+  const runs = new Map(); // trainId -> {dwell}
   const rnd = mulberry32(99);
 
   const stub = (title, pop) => ({ title, kind: 'article', description: '', popularity: pop });
@@ -303,8 +339,9 @@ export function createMockGame({ world, buildInterval = 1.1 }) {
   function addStation(title) {
     const p = world.placements.get(title);
     const s = MOCK_STATIONS.find((m) => m.title === title);
+    const pop = s ? s.pop : (state.stubs.get(title) ? state.stubs.get(title).popularity : 0.5);
     const st = {
-      title, article: { ...stub(title, s.pop), summary: '', thumbnail: null, url: '', leadLinks: [], links: [] },
+      title, article: { ...stub(title, pop), summary: '', thumbnail: null, url: '', ...mockLinks(title) },
       q: p.q, r: p.r, uniqueLinks: 40, incomePerMin: 2, waiting: [], builtAt: state.time,
     };
     state.stations.set(title, st);
@@ -313,6 +350,32 @@ export function createMockGame({ world, buildInterval = 1.1 }) {
 
   function trackBetween(a, b) {
     return state.tracks.find((t) => (t.from === a && t.to === b) || (t.from === b && t.to === a)) || null;
+  }
+
+  function optionsFor(track) {
+    const types = track.level === 0 ? ['local'] : track.level === 1 ? ['express'] : track.level === 2 ? FINALS : [];
+    return types.map((id) => {
+      const T = TRAIN_TYPES[id];
+      const cost = Math.round(T.cost * state.inflation);
+      return { typeId: id, name: T.name, blurb: T.blurb, cost, affordable: state.money >= cost };
+    });
+  }
+
+  /** Put a train of typeId on the track (replacing its old one), free of charge. */
+  function setTrain(track, typeId) {
+    const old = state.trains.find((t) => t.trackId === track.id);
+    const id = nextId++;
+    const train = {
+      id, typeId, trackId: track.id, state: 'dwelling',
+      t: old ? old.t : 0, forward: old ? old.forward : true, atStation: old ? old.atStation : track.from, passengers: [],
+    };
+    if (old) { state.trains = state.trains.filter((t) => t !== old); runs.delete(old.id); }
+    state.trains.push(train);
+    runs.set(id, { dwell: 0.6 });
+    track.level = typeId === 'local' ? 1 : typeId === 'express' ? 2 : 3;
+    track.typeId = typeId;
+    track.trainId = id;
+    return train;
   }
 
   const game = {
@@ -333,17 +396,88 @@ export function createMockGame({ world, buildInterval = 1.1 }) {
       emit('ghostsAdded', { placements: gs.placements });
       if (gs.revealed.length) emit('tilesRevealed', { tiles: gs.revealed });
     },
+    quoteBuild(fromTitle, toTitle) {
+      if (state.phase !== 'running') return { ok: false, reason: 'The game is not running.' };
+      if (!state.stations.has(fromTitle)) return { ok: false, reason: 'Track must start at a built station.' };
+      if (!world.placements.has(toTitle)) return { ok: false, reason: 'That article is not on the map yet.' };
+      if (trackBetween(fromTitle, toTitle)) return { ok: false, reason: 'Track already joins these stations.' };
+      let routes;
+      try { routes = world.findRoutes(fromTitle, toTitle); } catch { return { ok: false, reason: 'No route can be found there.' }; }
+      const stubTo = state.stubs.get(toTitle);
+      const stationCost = state.stations.has(toTitle) ? 0 : Math.round((ECON.stationBaseCost + (stubTo ? stubTo.popularity : 0.5) * ECON.stationPopularityCost) * state.inflation);
+      const mk = (style, route) => {
+        const trackCost = Math.round(route.cost * state.inflation);
+        const total = trackCost + stationCost;
+        return { style, route, trackCost, stationCost, total, affordable: total <= state.money };
+      };
+      return { ok: true, cheap: mk('cheap', routes.cheap), direct: mk('direct', routes.direct), same: !!routes.same };
+    },
+    /** Builds at once (no article to load). Pays a route bonus when passengers were waiting for it. */
+    async build(fromTitle, toTitle, style = 'cheap') {
+      const q = game.quoteBuild(fromTitle, toTitle);
+      if (!q.ok) return q;
+      const quote = q[style] || q.cheap;
+      if (!quote.affordable) return { ok: false, reason: `Not enough money: that costs ${quote.total}.` };
+      state.money -= quote.total;
+      const route = quote.route;
+      const track = { id: nextId++, from: fromTitle, to: toTitle, route, level: 0, typeId: null, trainId: null };
+      state.tracks.push(track);
+      const r1 = world.commitRoute(route);
+      const fresh = !state.stations.has(toTitle);
+      const r2 = fresh ? world.setBuilt(toTitle) : { revealed: [] };
+      const st = fresh ? addStation(toTitle) : state.stations.get(toTitle);
+      emit('tilesRevealed', { tiles: [...r1.revealed, ...r2.revealed] });
+      if (fresh) emit('stationBuilt', { station: st, track });
+      emit('trackBuilt', { track });
+      const waiting = state.thoughts.filter((t) => t.state === 'waiting' && t.to === toTitle);
+      if (fresh && waiting.length) {
+        const amount = Math.round(waiting.reduce((a, t) => a + t.fare, 0) * ECON.routeBonusFraction);
+        state.money += amount;
+        emit('routeBonus', { station: toTitle, count: waiting.length, amount });
+      }
+      return { ok: true };
+    },
+    quoteUpgrade(trackId) {
+      const track = state.tracks.find((t) => t.id === trackId);
+      if (!track) return { ok: false, reason: 'No such track.' };
+      const options = optionsFor(track);
+      if (!options.length) return { ok: false, reason: 'This track is fully upgraded.' };
+      return { ok: true, options };
+    },
+    upgradeTrack(trackId, typeId) {
+      const track = state.tracks.find((t) => t.id === trackId);
+      if (!track) return { ok: false, reason: 'No such track.' };
+      const options = optionsFor(track);
+      const opt = typeId ? options.find((o) => o.typeId === typeId) : options.length === 1 ? options[0] : null;
+      if (!opt) return { ok: false, reason: 'That upgrade is not on offer.' };
+      if (!opt.affordable) return { ok: false, reason: 'Not enough gold yet.' };
+      state.money -= opt.cost;
+      const wasBare = track.level === 0;
+      const train = setTrain(track, opt.typeId);
+      emit('trackUpgraded', { track, train });
+      emit('trainsChanged', {});
+      if (wasBare && state.goal && state.goal.id === 'first-train') advanceGoal(1);
+      return { ok: true };
+    },
     update(dtReal) {
       if (state.phase !== 'running') return;
       const dt = dtReal * state.speed;
       state.time += dt;
       timeline += dt;
+      state.payday.in -= dt;
+      if (state.payday.in <= 0) {
+        state.payday.in += state.payday.period;
+        const amount = 25;
+        state.money += amount;
+        state.payday.last = { amount, income: amount, fares: 0, upkeep: 0, time: state.time };
+        emit('payday', { amount, income: amount, fares: 0, upkeep: 0 });
+      }
       // build the network over the first seconds
       if (built < MOCK_STATIONS.length && timeline >= built * buildInterval) {
         const [from, to] = MOCK_TRACKS[built - 1];
         const routes = world.findRoutes(from, to);
         const route = routes.direct;
-        const track = { id: nextId++, from, to, route };
+        const track = { id: nextId++, from, to, route, level: 0, typeId: null, trainId: null };
         state.tracks.push(track);
         const r1 = world.commitRoute(route);
         const r2 = world.setBuilt(to);
@@ -353,57 +487,29 @@ export function createMockGame({ world, buildInterval = 1.1 }) {
         emit('trackBuilt', { track });
         built++;
         if (built === MOCK_STATIONS.length) {
-          state.lines.push(
-            { id: 1, name: 'Red line', color: LINE_COLORS[0], stations: ['Simplon Tunnel', 'Locomotive', 'Iron Bridge', 'Amazon rainforest'], trainIds: [] },
-            { id: 2, name: 'Blue line', color: LINE_COLORS[1], stations: ['Black Forest', 'Locomotive', 'Grand Canyon', 'Sahara'], trainIds: [] },
-          );
-          emit('linesChanged', {});
-          for (const [typeId, lineId, seg] of [['local', 1, 0], ['express', 2, 0], ['hauler', 2, 2]]) {
-            const id = nextId++;
-            const line = state.lines.find((l) => l.id === lineId);
-            line.trainIds.push(id);
-            const tr = trackBetween(line.stations[seg], line.stations[seg + 1]);
-            state.trains.push({ id, typeId, lineId, state: 'dwelling', trackId: tr.id, t: tr.from === line.stations[seg] ? 0 : 1, forward: tr.from === line.stations[seg], atStation: line.stations[seg], passengers: [] });
-            runs.set(id, { seg, dir: 1, p: 0, dwell: 1 + seg * 0.5 });
-          }
+          state.tracks.forEach((tr, i) => {
+            const lvl = MOCK_START_LEVELS[i] || 0;
+            if (lvl >= 1) setTrain(tr, lvl === 1 ? 'local' : lvl === 2 ? 'express' : FINALS[i % 2]);
+          });
           emit('trainsChanged', {});
         }
       }
-      // trains shuttle end to end
+      // each train shuttles along its own track
       for (const train of state.trains) {
         const run = runs.get(train.id);
-        const line = state.lines.find((l) => l.id === train.lineId);
-        if (!run || !line) continue;
-        const A = line.stations[run.seg], B = line.stations[run.seg + run.dir];
-        const tr = trackBetween(A, B);
-        if (!tr) continue;
-        const fwd = tr.from === A;
-        if (run.dwell > 0) {
-          run.dwell -= dt;
+        const tr = state.tracks.find((t) => t.id === train.trackId);
+        if (!run || !tr) continue;
+        if (run.dwell > 0) { run.dwell -= dt; train.state = 'dwelling'; continue; }
+        train.state = 'moving';
+        const step = (TRAIN_TYPES[train.typeId].speed * dt) / tr.route.length;
+        train.t += train.forward ? step : -step;
+        if (train.t >= 1 || train.t <= 0) {
+          train.t = train.t >= 1 ? 1 : 0;
+          train.atStation = train.t === 1 ? tr.to : tr.from;
+          train.forward = !train.forward;
           train.state = 'dwelling';
-        } else {
-          train.state = 'moving';
-          run.p += (TRAIN_TYPES[train.typeId].speed * dt) / tr.route.length;
-          if (run.p >= 1) {
-            // arrive at B; pick the next leg
-            run.p = 0;
-            const idx = run.seg + run.dir;
-            if (idx + run.dir < 0 || idx + run.dir >= line.stations.length) run.dir = -run.dir;
-            run.seg = idx;
-            run.dwell = ECON.dwellSeconds;
-            train.atStation = B;
-            const A2 = line.stations[run.seg], B2 = line.stations[run.seg + run.dir];
-            const tr2 = trackBetween(A2, B2);
-            train.trackId = tr2.id;
-            train.forward = tr2.from === A2;
-            train.t = train.forward ? 0 : 1;
-            train.state = 'dwelling';
-            continue;
-          }
+          run.dwell = ECON.dwellSeconds;
         }
-        train.trackId = tr.id;
-        train.forward = fwd;
-        train.t = fwd ? run.p : 1 - run.p;
       }
       // thoughts appear and get delivered
       spawnT -= dt;
@@ -413,25 +519,45 @@ export function createMockGame({ world, buildInterval = 1.1 }) {
         const st = list[Math.floor(rnd() * list.length)];
         if (st.waiting.length < ECON.maxWaitingPerStation) {
           const pm = 40 + rnd() * 60;
-          const th = { id: nextId++, from: st.title, to: 'Somewhere', toDescription: '', hops: 2, fare: 40, patience: pm, patienceMax: pm, state: 'waiting', at: st.title, trainId: null };
+          // about half want an unbuilt link (so signposts show who is waiting for them)
+          const ghosts = [...world.placements.values()].filter((p) => p.state === 'ghost').map((p) => p.title);
+          const to = ghosts.length && rnd() < 0.55 ? ghosts[Math.floor(rnd() * Math.min(ghosts.length, 4))] : 'Somewhere';
+          const th = { id: nextId++, from: st.title, to, toDescription: '', hops: 2, fare: 25 + Math.round(rnd() * 60), patience: pm, patienceMax: pm, state: 'waiting', at: st.title, trainId: null };
           state.thoughts.push(th);
           st.waiting.push(th.id);
           emit('thoughtSpawned', { thought: th });
         }
       }
       for (const th of state.thoughts) th.patience = Math.max(0, th.patience - dt);
+      // passengers who ran out of patience give up (and break the streak)
+      for (const th of state.thoughts.filter((t) => t.state === 'waiting' && t.patience <= 0)) {
+        state.thoughts = state.thoughts.filter((t) => t !== th);
+        const st = state.stations.get(th.at);
+        if (st) st.waiting = st.waiting.filter((id) => id !== th.id);
+        state.lost++;
+        state.streak = 0;
+        emit('thoughtLost', { thought: { ...th, state: 'lost' } });
+      }
       deliverT -= dt;
       if (deliverT <= 0) {
         deliverT = 1.5 + rnd() * 2;
-        const list = [...state.stations.values()].filter((s) => s.waiting.length);
+        // only passengers bound for somewhere already built get delivered
+        const list = [...state.stations.values()].filter((s) => s.waiting.some((id) => { const t = state.thoughts.find((x) => x.id === id); return t && t.to === 'Somewhere'; }));
         if (list.length) {
           const st = list[Math.floor(rnd() * list.length)];
-          const id = st.waiting.shift();
+          const idx = st.waiting.findIndex((id) => { const t = state.thoughts.find((x) => x.id === id); return t && t.to === 'Somewhere'; });
+          const id = st.waiting.splice(idx, 1)[0];
           const th = state.thoughts.find((t) => t.id === id);
           state.thoughts = state.thoughts.filter((t) => t.id !== id);
           state.delivered++;
           const dest = [...state.stations.keys()][Math.floor(rnd() * state.stations.size)];
-          if (th) emit('thoughtDelivered', { thought: { ...th, state: 'delivered' }, fare: th.fare, station: dest });
+          if (th) {
+            state.streak++;
+            const fare = Math.round(th.fare * (1 + Math.min(ECON.streakFareMax, ECON.streakFarePerStep * state.streak)));
+            state.payday.fares += fare;
+            emit('thoughtDelivered', { thought: { ...th, state: 'delivered' }, fare, station: dest, streak: state.streak });
+            if (state.goal && state.goal.id.startsWith('deliver')) advanceGoal(1);
+          }
         }
       }
     },

@@ -1,22 +1,32 @@
 // Trains: per-type low-poly locomotives and carriages, and the pure placement of
-// every car along the route by arc length (trailing onto the previous track of
-// the line when the train has just left a station, clamped at true ends).
+// every car along its own track by arc length. Each train serves one track for life,
+// so at either end the trailing carriages bunch into the station (and hide there).
 import * as THREE from 'three';
 import { MeshBuilder, shade } from './builder.js';
 import { sampleRoute, routeLength } from './rail.js';
 import { TRAIN_TYPES } from '../config.js';
+import { TUNNEL_COVER } from './track.js';
 
 // ------------------------------------------------------------ pure layout
 
 export const CAR_SPECS = {
   local:   { loco: 0.5,  car: 0.42, gap: 0.05 },
   express: { loco: 0.64, car: 0.5,  gap: 0.04 },
-  hauler:  { loco: 0.56, car: 0.4,  gap: 0.05 },
+  freight: { loco: 0.56, car: 0.4,  gap: 0.04 },
+  bullet:  { loco: 0.74, car: 0.52, gap: 0.03 },
 };
+
+/** Unknown or retired type ids fall back to a drawable one. */
+export function drawableType(typeId) {
+  if (TRAIN_TYPES[typeId] && CAR_SPECS[typeId]) return typeId;
+  if (typeId === 'hauler') return 'freight';
+  return 'local';
+}
 
 /** Distances behind the head (train front) of each vehicle's centre. */
 export function carOffsets(typeId) {
-  const spec = CAR_SPECS[typeId] || CAR_SPECS.local;
+  typeId = drawableType(typeId);
+  const spec = CAR_SPECS[typeId];
   const type = TRAIN_TYPES[typeId] || TRAIN_TYPES.local;
   const n = Math.max(0, Math.floor(type.cars || 0));
   const out = [{ kind: 'loco', index: 0, centre: spec.loco / 2, half: spec.loco / 2 }];
@@ -44,16 +54,16 @@ export function makeTrailSampler(route, t, forward, prev = null) {
     }
     if (a >= 0 && a <= L) {
       const p = sampleRoute(route, a / L);
-      return { x: p.x, y: p.y, z: p.z, kind: p.kind, clamped: 0 };
+      return { x: p.x, y: p.y, z: p.z, kind: p.kind, clamped: 0, s: a };
     }
     const over = a < 0 ? -a : a - L;
     if (Lp > 0) {
       const ap = Math.min(Lp, prev.joinAtTo ? Lp - over : over);
       const p = sampleRoute(prev.route, Math.max(0, ap) / Lp);
-      return { x: p.x, y: p.y, z: p.z, kind: p.kind, clamped: Math.max(0, over - Lp) };
+      return { x: p.x, y: p.y, z: p.z, kind: p.kind, clamped: Math.max(0, over - Lp), s: a < 0 ? 0 : L };
     }
     const p = sampleRoute(route, a < 0 ? 0 : 1);
-    return { x: p.x, y: p.y, z: p.z, kind: p.kind, clamped: over };
+    return { x: p.x, y: p.y, z: p.z, kind: p.kind, clamped: over, s: a < 0 ? 0 : L };
   };
 }
 
@@ -82,26 +92,6 @@ export function placeCars(route, t, forward, offsets, prev = null, buried = null
       hidden: c.clamped > o.half,
     };
   });
-}
-
-/** The track a train came from (joined at its trailing station), or null. */
-export function previousTrack(state, train, track) {
-  if (!state || !train || !track || !track.route) return null;
-  const trailing = train.forward ? track.from : track.to;
-  const other = train.forward ? track.to : track.from;
-  const line = (state.lines || []).find((l) => l.id === train.lineId);
-  if (!line || !Array.isArray(line.stations)) return null;
-  const st = line.stations;
-  for (let i = 0; i < st.length; i++) {
-    if (st[i] !== trailing) continue;
-    for (const j of [i - 1, i + 1]) {
-      const cand = st[j];
-      if (!cand || cand === other) continue;
-      const tr = (state.tracks || []).find((k) => (k.from === trailing && k.to === cand) || (k.from === cand && k.to === trailing));
-      if (tr && tr.route && tr !== track) return { route: tr.route, joinAtTo: tr.route.to === trailing || tr.to === trailing };
-    }
-  }
-  return null;
 }
 
 // ------------------------------------------------------------ geometry (forward = +z, rail top = y 0)
@@ -283,15 +273,57 @@ function wagonHauler(variant) {
   return { paint, trim };
 }
 
+/** Streamlined power car: long low nose sloping almost to the rails. */
+function locoBullet() {
+  const paint = new MeshBuilder(), trim = new MeshBuilder();
+  trim.box(0, 0.05, -0.05, 0.17, 0.025, 0.6, DARK);
+  bogie(trim, -0.24); bogie(trim, 0.14);
+  // body: rounded by a lighter roof slab on top
+  paint.box(0, 0.13, -0.15, 0.2, 0.13, 0.42, '#ffffff', 0, { noBottom: true });
+  trim.box(0, 0.205, -0.15, 0.17, 0.03, 0.42, '#f2f2f0');
+  // long nose from z 0.06 to 0.37
+  const z0 = 0.06, z1 = 0.37, yb = 0.065, yt = 0.22, w = 0.1;
+  const tipY = yb + 0.035;
+  paint.quad([-w, yt, z0], [-w * 0.35, tipY + 0.02, z1], [w * 0.35, tipY + 0.02, z1], [w, yt, z0], '#ffffff');
+  for (const s of [-1, 1]) paint.quad([s * w, yb, z0], [s * w, yt, z0], [s * w * 0.35, tipY + 0.02, z1], [s * w * 0.35, yb, z1], shade('#ffffff', 0.82));
+  paint.quad([-w * 0.35, yb, z1], [w * 0.35, yb, z1], [w * 0.35, tipY + 0.02, z1], [-w * 0.35, tipY + 0.02, z1], shade('#ffffff', 0.9));
+  // cockpit glass on the nose slope
+  const L = (a, b, t) => a + (b - a) * t;
+  const gy = (t) => L(yt, tipY + 0.02, t) + 0.004, gz = (t) => L(z0, z1, t);
+  trim.quad([-0.075, gy(0.05), gz(0.05)], [-0.05, gy(0.4), gz(0.4)], [0.05, gy(0.4), gz(0.4)], [0.075, gy(0.05), gz(0.05)], GLASS);
+  for (const s of [-1, 1]) {
+    trim.box(s * 0.101, 0.165, -0.15, 0.005, 0.04, 0.4, GLASS);
+    trim.box(s * 0.101, 0.1, -0.12, 0.005, 0.018, 0.46, WHITE);
+  }
+  trim.box(0, 0.1, 0.37, 0.06, 0.016, 0.008, '#fff6c8');
+  return { paint, trim, chimney: null };
+}
+
+function coachBullet() {
+  const paint = new MeshBuilder(), trim = new MeshBuilder();
+  paint.box(0, 0.13, 0, 0.2, 0.13, 0.5, '#ffffff', 0, { noBottom: true });
+  trim.box(0, 0.205, 0, 0.17, 0.03, 0.49, '#f2f2f0');
+  for (const s of [-1, 1]) {
+    trim.box(s * 0.101, 0.165, 0, 0.005, 0.04, 0.46, GLASS);
+    trim.box(s * 0.101, 0.1, 0, 0.005, 0.018, 0.5, WHITE);
+  }
+  trim.box(0, 0.055, 0, 0.17, 0.02, 0.48, DARK);
+  bogie(trim, -0.17); bogie(trim, 0.17);
+  return { paint, trim };
+}
+
 /** Builders per (type, vehicle). Exported for tests. */
 export function vehicleBuilders(typeId, kind, index) {
+  typeId = drawableType(typeId);
   if (kind === 'loco') {
     if (typeId === 'express') return locoExpress();
-    if (typeId === 'hauler') return locoHauler();
+    if (typeId === 'freight') return locoHauler();
+    if (typeId === 'bullet') return locoBullet();
     return locoLocal();
   }
   if (typeId === 'express') return coachExpress();
-  if (typeId === 'hauler') return wagonHauler(index % 4);
+  if (typeId === 'freight') return wagonHauler(index % 4);
+  if (typeId === 'bullet') return coachBullet();
   return coachLocal();
 }
 
@@ -299,7 +331,8 @@ export function vehicleBuilders(typeId, kind, index) {
 
 const geomCache = new Map();
 function vehicleGeoms(typeId, kind, index) {
-  const key = `${typeId}|${kind}|${kind === 'car' && typeId === 'hauler' ? index % 4 : 0}`;
+  typeId = drawableType(typeId);
+  const key = `${typeId}|${kind}|${kind === 'car' && typeId === 'freight' ? index % 4 : 0}`;
   let g = geomCache.get(key);
   if (!g) {
     const b = vehicleBuilders(typeId, kind, index);
@@ -317,10 +350,15 @@ export function disposeTrainGeometries() {
 const _v = new THREE.Vector3();
 
 export class TrainsView {
-  constructor({ parent, materials, makePaintMaterial, smoke, groundAt }) {
-    // a vehicle hides only when it is in a tunnel stretch AND inside the rock
-    this.buried = typeof groundAt === 'function'
-      ? (p) => p.kind === 'tunnel' && groundAt(p.x, p.z) > p.y + 0.25
+  constructor({ parent, materials, makePaintMaterial, smoke, groundAt, naturalAt, onTypeChange, buriedAt }) {
+    // (trackId, arcLength) => true/false inside the drawn tunnel, null when unknown
+    this.buriedAt = typeof buriedAt === 'function' ? buriedAt : null;
+    this.onTypeChange = onTypeChange || null; // (x, y, z, typeId) when a track's train is replaced
+    // a vehicle hides only when it is in a tunnel stretch AND under the hill (same rule as
+    // the portals in track.js, so cars vanish exactly at the tunnel mouth)
+    const hill = typeof naturalAt === 'function' ? naturalAt : groundAt;
+    this.buried = typeof hill === 'function'
+      ? (p) => p.kind === 'tunnel' && hill(p.x, p.z) > p.y + TUNNEL_COVER
       : null;
     this.group = new THREE.Group();
     this.group.name = 'trains';
@@ -332,7 +370,7 @@ export class TrainsView {
   }
 
   _create(train) {
-    const typeId = TRAIN_TYPES[train.typeId] ? train.typeId : 'local';
+    const typeId = drawableType(train.typeId);
     const offsets = carOffsets(typeId);
     const paintMat = this.makePaintMaterial();
     const vehicles = offsets.map((o) => {
@@ -348,7 +386,7 @@ export class TrainsView {
       this.group.add(obj);
       return { obj, offset: o, chimney: g.chimney, pos: { x: 0, y: 0, z: 0 }, visible: false };
     });
-    const rec = { id: train.id, typeId, offsets, vehicles, paintMat, color: null, smokeT: 0, head: null, seen: true, spawn: 0 };
+    const rec = { id: train.id, trackId: train.trackId, typeId, offsets, vehicles, paintMat, color: null, smokeT: 0, head: null, seen: true, spawn: 0 };
     this.trains.set(train.id, rec);
     return rec;
   }
@@ -366,13 +404,16 @@ export class TrainsView {
   update(state, dt) {
     const trains = (state && state.trains) || [];
     const tracks = (state && state.tracks) || [];
-    const lines = (state && state.lines) || [];
     for (const rec of this.trains.values()) rec.seen = false;
     for (const train of trains) {
       if (!train) continue;
       let rec = this.trains.get(train.id);
-      if (rec && rec.typeId !== (TRAIN_TYPES[train.typeId] ? train.typeId : 'local')) { this._remove(rec); rec = null; }
-      if (!rec) rec = this._create(train);
+      if (rec && rec.typeId !== drawableType(train.typeId)) { this._remove(rec); rec = null; }
+      if (!rec) {
+        rec = this._create(train);
+        // a train that appears after the first frame is a purchase or upgrade: flourish
+        rec.fx = this.frames > 0;
+      }
       rec.seen = true;
       const track = tracks.find((k) => k.id === train.trackId);
       if (!track || !track.route || !track.route.points || !track.route.points.length) {
@@ -380,11 +421,14 @@ export class TrainsView {
         rec.head = null;
         continue;
       }
-      const line = lines.find((l) => l.id === train.lineId);
-      const color = (line && line.color) || '#dddddd';
+      const color = (TRAIN_TYPES[rec.typeId] && TRAIN_TYPES[rec.typeId].color) || '#dddddd';
       if (color !== rec.color) { rec.paintMat.color.set(color); rec.color = color; }
-      const prev = previousTrack(state, train, track);
-      const places = placeCars(track.route, train.t, train.forward !== false, rec.offsets, prev, this.buried);
+      const fallback = this.buried;
+      const buriedAt = this.buriedAt;
+      const inRock = buriedAt
+        ? (p) => { const b = buriedAt(train.trackId, p.s); return b == null ? (fallback ? fallback(p) : p.kind === 'tunnel') : b; }
+        : fallback;
+      const places = placeCars(track.route, train.t, train.forward !== false, rec.offsets, null, inRock);
       rec.spawn = Math.min(1, rec.spawn + dt * 3);
       const k = rec.spawn < 1 ? 0.0001 + rec.spawn * (2 - rec.spawn) : 1;
       for (let i = 0; i < rec.vehicles.length; i++) {
@@ -400,15 +444,16 @@ export class TrainsView {
       }
       const h = places[0];
       rec.head = { x: h.x, y: h.y, z: h.z, dx: h.dx, dy: h.dy, dz: h.dz, inTunnel: h.inTunnel };
+      if (rec.fx) { rec.fx = false; if (this.onTypeChange) this.onTypeChange(h.x, h.y, h.z, rec.typeId); }
       // smoke / exhaust
       const loco = rec.vehicles[0];
       if (this.smoke && loco.chimney && loco.visible && train.state !== 'dwelling') {
         rec.smokeT -= dt;
         if (rec.smokeT <= 0) {
-          rec.smokeT = rec.typeId === 'hauler' ? 0.22 : 0.13;
+          rec.smokeT = rec.typeId === 'freight' ? 0.22 : 0.13;
           loco.obj.updateMatrixWorld();
           _v.set(loco.chimney[0], loco.chimney[1], loco.chimney[2]).applyMatrix4(loco.obj.matrixWorld);
-          this.smoke.emit(_v.x, _v.y, _v.z, rec.typeId === 'hauler' ? 0.45 : 1);
+          this.smoke.emit(_v.x, _v.y, _v.z, rec.typeId === 'freight' ? 0.45 : 1);
         }
       } else if (this.smoke && loco.chimney && loco.visible && train.state === 'dwelling') {
         rec.smokeT -= dt * 0.25;
@@ -416,11 +461,12 @@ export class TrainsView {
           rec.smokeT = 0.6;
           loco.obj.updateMatrixWorld();
           _v.set(loco.chimney[0], loco.chimney[1], loco.chimney[2]).applyMatrix4(loco.obj.matrixWorld);
-          this.smoke.emit(_v.x, _v.y, _v.z, rec.typeId === 'hauler' ? 0.45 : 0.8);
+          this.smoke.emit(_v.x, _v.y, _v.z, rec.typeId === 'freight' ? 0.45 : 0.8);
         }
       }
     }
     for (const rec of [...this.trains.values()]) if (!rec.seen) this._remove(rec);
+    this.frames = (this.frames || 0) + 1;
   }
 
   /** Pick candidates: one sphere per visible vehicle. */

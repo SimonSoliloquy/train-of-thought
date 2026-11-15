@@ -2,7 +2,7 @@
 // with piers/trestles; tunnel portals; ledge retaining walls. Also the floating
 // ribbons for route previews and line highlights. Pure (three math only).
 import { MeshBuilder, rgb, shade, mix } from './builder.js';
-import { sampleRoute, routeLength } from './rail.js';
+import { sampleRoute, routeLength, RAIL_LIFT } from './rail.js';
 import { TRACK_COLORS as C, ROUTE_PREVIEW } from './palette.js';
 
 export const TRACK = {
@@ -115,27 +115,60 @@ function pier(bld, P, ground) {
     const Pm = { ...P, y: ground };
     frameBox(bld, Pm, 0, H * 0.5, 0, 0.36, H, 0.14, C.pier);
     frameBox(bld, Pm, 0, 0.06, 0, 0.44, 0.12, 0.2, C.pierDark);
-  } else {
-    // timber trestle: splayed legs and cross braces
+  } else if (H < 2.2) {
+    // timber trestle: legs splayed wider the taller it stands, cross braces and X-bracing
     const Pm = { ...P, y: ground };
-    const legs = [-1, 1];
-    const nBr = Math.max(1, Math.floor(H / 0.45));
-    for (const s of legs) {
-      // approximate splayed leg with segments
-      const segs = Math.max(2, Math.ceil(H / 0.5));
+    const base = 0.3 + 0.08 * H, topHalf = 0.17;
+    const halfAt = (y) => base - (base - topHalf) * (y / H);
+    const segs = Math.max(2, Math.ceil(H / 0.5));
+    for (const s of [-1, 1]) {
       for (let k = 0; k < segs; k++) {
         const y0 = (k / segs) * H, y1 = ((k + 1) / segs) * H;
-        const o0 = s * (0.3 - 0.13 * (y0 / H)), o1 = s * (0.3 - 0.13 * (y1 / H));
-        frameBox(bld, Pm, (o0 + o1) / 2, (y0 + y1) / 2, 0, 0.05, y1 - y0 + 0.01, 0.05, C.deck);
+        frameBox(bld, Pm, s * (halfAt(y0) + halfAt(y1)) / 2, (y0 + y1) / 2, 0, 0.055, y1 - y0 + 0.01, 0.055, C.deck);
       }
     }
-    for (let k = 1; k <= nBr; k++) {
-      const y = (k / (nBr + 1)) * H;
-      const half = 0.3 - 0.13 * (y / H);
-      frameBox(bld, Pm, 0, y, 0, half * 2, 0.035, 0.035, shade(C.deck, 0.85));
+    const nBr = Math.max(1, Math.floor(H / 0.45));
+    let yPrev = 0;
+    for (let k = 1; k <= nBr + 1; k++) {
+      const y = k <= nBr ? (k / (nBr + 1)) * H : H - 0.04;
+      if (k <= nBr) frameBox(bld, Pm, 0, y, 0, halfAt(y) * 2, 0.035, 0.035, shade(C.deck, 0.85));
+      // one diagonal per bay, alternating, reads as X-bracing along the viaduct
+      const sgn = k % 2 ? 1 : -1;
+      const ax = -sgn * halfAt(yPrev), bx = sgn * halfAt(y);
+      const len = Math.hypot(bx - ax, y - yPrev);
+      const mid = { ...Pm, y: ground + (y + yPrev) / 2 };
+      strut(bld, mid, (ax + bx) / 2, Math.atan2(y - yPrev, bx - ax), len, shade(C.deck, 0.78));
+      yPrev = y;
     }
     frameBox(bld, Pm, 0, H - 0.02, 0, 0.42, 0.05, 0.08, shade(C.deck, 0.9));
+  } else {
+    // tall stone viaduct pier: tapered column with string courses, wide footing
+    const Pm = { ...P, y: ground };
+    const n = Math.max(3, Math.ceil(H / 0.6));
+    for (let k = 0; k < n; k++) {
+      const y0 = (k / n) * H, y1 = ((k + 1) / n) * H;
+      const u = (y0 + y1) / 2 / H;
+      const w = 0.62 - 0.26 * u, d = 0.3 - 0.12 * u;
+      frameBox(bld, Pm, 0, (y0 + y1) / 2, 0, w, y1 - y0 + 0.005, d, k % 2 ? C.pier : shade(C.pier, 0.94));
+      if (k > 0) frameBox(bld, Pm, 0, y0, 0, w + 0.04, 0.04, d + 0.04, C.pierDark);
+    }
+    frameBox(bld, Pm, 0, 0.08, 0, 0.74, 0.16, 0.38, C.pierDark);
+    frameBox(bld, Pm, 0, H - 0.03, 0, 0.46, 0.06, 0.2, C.pierDark);
   }
+}
+
+/** A thin beam in the cross-section plane of P, centred at side offset o, tilted by angle a. */
+function strut(bld, P, o, a, len, color) {
+  const c = Math.cos(a), s = Math.sin(a), t = 0.016, f = 0.02;
+  const pt = (u, v, w) => {
+    const so = o + u * c - v * s, sh = u * s + v * c;
+    return [P.x + P.rx * so + P.tx * w, P.y + sh, P.z + P.rz * so + P.tz * w];
+  };
+  const l2 = len / 2;
+  bld.quad(pt(-l2, -t, -f), pt(l2, -t, -f), pt(l2, t, -f), pt(-l2, t, -f), color);
+  bld.quad(pt(-l2, t, f), pt(l2, t, f), pt(l2, -t, f), pt(-l2, -t, f), color);
+  bld.quad(pt(-l2, t, -f), pt(l2, t, -f), pt(l2, t, f), pt(-l2, t, f), shade(color, 1.1));
+  bld.quad(pt(-l2, -t, f), pt(l2, -t, f), pt(l2, -t, -f), pt(-l2, -t, -f), shade(color, 0.7));
 }
 
 function retainingWall(bld, A, B, side, dropA, dropB) {
@@ -157,9 +190,20 @@ function retainingWall(bld, A, B, side, dropA, dropB) {
 /** Tunnel portal at sample P; d = +1 when the tunnel lies ahead (toward route.to). */
 function portal(bld, P, d, mountainTop) {
   const F = { ...P, tx: P.tx * d, tz: P.tz * d, rx: P.rx * d, rz: P.rz * d };
-  const wallH = Math.min(1.05, Math.max(0.72, mountainTop - P.y + 0.05));
+  // on a steep hillside the headwall stands taller, and a stone collar runs back into the
+  // hill so no gap shows between the facade and the slope above and beside it
+  const wallH = Math.min(1.5, Math.max(0.64, mountainTop - P.y + 0.05));
   const stone = C.portal;
   const open = 0.26;
+  // the collar stays under the hill surface behind the facade (never a block on top of it)
+  const collarH = Math.max(0.55, Math.min(wallH, mountainTop - P.y - 0.08));
+  frameBox(bld, F, 0, collarH / 2 - 0.14, 0.36, open * 2 + 0.4, collarH + 0.04, 0.58, shade(stone, 0.8), false);
+  if (mountainTop - P.y > 1.0) {
+    for (const s of [-1, 1]) {
+      // wing walls splaying out into a steep slope
+      frameBox(bld, F, s * (open + 0.36), wallH * 0.3 - 0.12, 0.1, 0.22, wallH * 0.6, 0.3, shade(stone, 0.88), false);
+    }
+  }
   // pillars
   frameBox(bld, F, -open - 0.12, wallH / 2 - 0.12, 0, 0.24, wallH, 0.14, stone, false);
   frameBox(bld, F, open + 0.12, wallH / 2 - 0.12, 0, 0.24, wallH, 0.14, stone, false);
@@ -182,6 +226,95 @@ function portal(bld, P, d, mountainTop) {
   for (const s of [-1, 1]) bld.quad(pt(s * open, -0.12, -0.07), pt(s * open, -0.12, 0.05), pt(s * open, archTop, 0.05), pt(s * open, archTop, -0.07), shade(C.portalDark, 3));
 }
 
+/** Hill this far above the (lifted) rail top hides the track: tunnel. */
+export const TUNNEL_COVER = 0.55;
+
+/**
+ * Per resampled segment: its kind and whether it is buried (a tunnel stretch under enough
+ * natural hill). Tiny open gaps inside a tunnel are closed so they do not spawn portals.
+ */
+export function buriedSegments(route, S, naturalAt) {
+  const L = routeLength(route);
+  const kinds = [], buried = [];
+  const has = typeof naturalAt === 'function';
+  for (let i = 0; i + 1 < S.length; i++) {
+    const A = S[i], B = S[i + 1];
+    const kind = segKind(route, A, B, L);
+    kinds.push(kind);
+    let b = kind === 'tunnel';
+    if (b && has) {
+      const g = naturalAt((A.x + B.x) / 2, (A.z + B.z) / 2);
+      b = Number.isFinite(g) ? g > (A.y + B.y) / 2 + TUNNEL_COVER : true;
+    }
+    buried.push(b);
+  }
+  // Close open gaps inside one tunnel: short ones always, longer ones while the rail is still
+  // under the land there (a long tunnel under a dip must not pop out as a cutting with portals,
+  // and its train must stay hidden all the way through).
+  for (let i = 1; i + 1 < buried.length; i++) {
+    if (buried[i]) continue;
+    let j = i; while (j < buried.length && !buried[j]) j++;
+    if (j < buried.length && buried[i - 1] && kinds.slice(i, j).every((k) => k === 'tunnel')) {
+      let under = true;
+      if (j - i > 3 && has) {
+        for (let k = i; k < j && under; k++) {
+          const A = S[k], B = S[k + 1];
+          const g = naturalAt((A.x + B.x) / 2, (A.z + B.z) / 2);
+          if (Number.isFinite(g) && g < (A.y + B.y) / 2 + 0.12) under = false;
+        }
+      }
+      if (under) for (let k = i; k < j; k++) buried[k] = true;
+    }
+    i = j;
+  }
+  return { kinds, buried };
+}
+
+/** Arc-length intervals [s0, s1] of the resampled route that are buried (inside a tunnel). Pure. */
+export function buriedIntervals(S, buried) {
+  const out = [];
+  for (let i = 0; i < buried.length; i++) {
+    if (!buried[i]) continue;
+    let j = i; while (j + 1 < buried.length && buried[j + 1]) j++;
+    out.push([S[i].s, S[j + 1].s]);
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * Where the land should be graded under a committed track: open (not buried) stretches
+ * that are not bridges, as segments {ax, az, ay, bx, bz, by, capA, capB} with the target
+ * ground height just under the trackbed. Ends next to a tunnel portal do not grade past
+ * the portal, so the hill over the tunnel mouth stays whole.
+ */
+export function gradeSegments(route, naturalAt) {
+  const S = resample(route, 0.3);
+  const { kinds, buried } = buriedSegments(route, S, naturalAt);
+  const out = [];
+  const drop = RAIL_LIFT + 0.03;
+  for (let i = 0; i + 1 < S.length; i++) {
+    if (buried[i] || kinds[i] === 'bridge') continue;
+    const A = S[i], B = S[i + 1];
+    // how far the bed sits above or below the natural land beside it (embankment / cutting)
+    let rise = 0;
+    if (typeof naturalAt === 'function') {
+      for (const P of [A, B]) {
+        for (const side of [-1, 1]) {
+          const g = naturalAt(P.x + P.rx * side * 0.9, P.z + P.rz * side * 0.9);
+          if (Number.isFinite(g)) rise = Math.max(rise, Math.abs(g - (P.y - drop)));
+        }
+      }
+    }
+    out.push({
+      ax: A.x, az: A.z, ay: A.y - drop, bx: B.x, bz: B.z, by: B.y - drop, rise,
+      capA: !(i > 0 && buried[i - 1]),
+      capB: !(i + 2 < S.length && buried[i + 1]),
+    });
+  }
+  return out;
+}
+
 /**
  * Build the whole track for one route, emitted in arc-length order so drawRange can
  * animate it drawing itself from -> to.
@@ -198,29 +331,12 @@ export function buildTrack(route, env = {}) {
   const portals = [];
   const kinds = { ground: 0, ledge: 0, bridge: 0, tunnel: 0 };
   let lastPier = -Infinity;
-  // A tunnel segment is only hidden where it is actually inside the rock; tunnel-kind
-  // stretches still in the open are drawn as a cutting. Portals sit at the rock face.
-  const hasGround = typeof env.groundAt === 'function';
-  const segKinds = [], buried = [];
-  for (let i = 0; i + 1 < S.length; i++) {
-    const A = S[i], B = S[i + 1];
-    const kind = segKind(route, A, B, L);
-    segKinds.push(kind);
-    let b = kind === 'tunnel';
-    if (b && hasGround) {
-      const g = groundAt((A.x + B.x) / 2, (A.z + B.z) / 2);
-      b = Number.isFinite(g) ? g > (A.y + B.y) / 2 + 0.2 : true;
-    }
-    buried.push(b);
-  }
-  // close tiny gaps so a dip in the rock does not spawn a pair of portals
-  for (let i = 1; i + 1 < buried.length; i++) {
-    if (buried[i]) continue;
-    let j = i; while (j < buried.length && !buried[j]) j++;
-    if (j < buried.length && j - i <= 2 && buried[i - 1] && segKinds.slice(i, j).every((k) => k === 'tunnel')) for (let k = i; k < j; k++) buried[k] = true;
-    i = j;
-  }
-  const rockAt = (x, y, z) => { const g = groundAt(x, z); return Number.isFinite(g) ? g > y + 0.2 : true; };
+  // A tunnel segment is only hidden where it is actually under enough hill; tunnel-kind
+  // stretches still in the open are drawn as a cutting. Portals sit at the hill face.
+  const natAt = env.naturalAt || env.groundAt;
+  const hasGround = typeof natAt === 'function';
+  const { kinds: segKinds, buried } = buriedSegments(route, S, natAt);
+  const rockAt = (x, y, z) => { const g = natAt(x, z); return Number.isFinite(g) ? g > y + TUNNEL_COVER : true; };
   for (let i = 0; i + 1 < S.length; i++) {
     const A = S[i], B = S[i + 1];
     const kind = segKinds[i];
@@ -248,8 +364,9 @@ export function buildTrack(route, env = {}) {
     if (buried[i]) { marks.push({ s: B.s, v: bld.vertexCount }); continue; }
     if (kind === 'bridge') {
       bridgeDeck(bld, A, B);
-      if (A.s - lastPier >= TRACK.pierEvery) {
-        const g = groundAt(A.x, A.z);
+      const g = groundAt(A.x, A.z);
+      const tall = Number.isFinite(g) && A.y - g > 2.3;
+      if (A.s - lastPier >= (tall ? TRACK.pierEvery * 2 : TRACK.pierEvery)) {
         if (Number.isFinite(g)) pier(bld, A, g);
         lastPier = A.s;
       }
@@ -274,7 +391,7 @@ export function buildTrack(route, env = {}) {
     railsAndSleeper(bld, A, B, true);
     marks.push({ s: B.s, v: bld.vertexCount });
   }
-  return { builder: bld, marks, portals, length: L, kinds };
+  return { builder: bld, marks, portals, length: L, kinds, buried: buriedIntervals(S, buried) };
 }
 
 /** Vertex count to draw so the track appears built up to arc length s. */

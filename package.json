@@ -6,10 +6,7 @@
   "scripts": {
     "test": "node --test \"src/**/*.test.js\"",
     "dev": "vite --port 5183 --strictPort",
-    "build": "vite build",
-    "dev:builder": "vite --config vite.builder.config.js",
-    "build:builder": "vite build --config vite.builder.config.js",
-    "deploy:builder": "npm run build:builder && VERCEL_ORG_ID=team_jVsb7Uj2P1aLIM3JM5Y6jYmG VERCEL_PROJECT_ID=prj_ljCQviXc9sDWjGBUGsPOoB9fb7qg vercel deploy dist-builder --prod --yes"
+    "build": "vite build"
   },
   "keywords": [],
   "author": "",

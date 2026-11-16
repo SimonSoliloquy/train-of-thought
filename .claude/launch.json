@@ -9,15 +9,6 @@
         "dev"
       ],
       "port": 5183
-    },
-    {
-      "name": "railbuilder",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev:builder"
-      ],
-      "port": 5184
     }
   ]
 }

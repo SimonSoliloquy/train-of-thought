@@ -30,7 +30,7 @@ export function deliveryFloat(streak) {
  * @returns {import('../types.js').Renderer}
  */
 // plain: show the map and the trains only: no station names, no prices, no gold anywhere
-// (the Rail Builder page).
+// (Rail Builder, github.com/SimonSoliloquy/railbuilder, which copies this engine).
 export function createRenderer({ container, game, world, plain = false }) {
   const warned = new Set();
   const safe = (tag, fn) => {

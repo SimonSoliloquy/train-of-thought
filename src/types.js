@@ -129,7 +129,7 @@
  *   Unbuilt placements are invisible reservations and MAY be moved by later noteLinks/placeGhosts
  *   calls; a built station never moves.
  * @property {(parentTitle: string, title: string, x: number, z: number) => {placement: Placement|null, revealed: Tile[]}} [placeAt]
- *   Optional (Rail Builder). An unbuilt spot on the acceptable hex nearest world point (x, z);
+ *   Optional (Rail Builder, github.com/SimonSoliloquy/railbuilder). An unbuilt spot on the acceptable hex nearest world point (x, z);
  *   unlike placeGhosts it is never moved afterwards. Null if the title is already placed.
  * @property {(title: string) => boolean} [dropGhost]   Optional. Removes an unbuilt spot again.
  * @property {(title: string) => {revealed: Tile[]}} setBuilt   ghost -> built; reveals WORLD.revealStation.

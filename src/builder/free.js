@@ -1,4 +1,4 @@
-// Train Track Builder: nothing costs anything. This module is imported first, so the shared
+// Rail Builder: nothing costs anything. This module is imported first, so the shared
 // numbers are already zero when the rules and the renderer load.
 import { ECON, TRAIN_TYPES, WORLD } from '../config.js';
 

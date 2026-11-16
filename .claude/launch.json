@@ -11,7 +11,7 @@
       "port": 5183
     },
     {
-      "name": "train-track-builder",
+      "name": "railbuilder",
       "runtimeExecutable": "npm",
       "runtimeArgs": [
         "run",

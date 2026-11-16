@@ -30,7 +30,7 @@ export function deliveryFloat(streak) {
  * @returns {import('../types.js').Renderer}
  */
 // plain: show the map and the trains only: no station names, no prices, no gold anywhere
-// (the Train Track Builder page).
+// (the Rail Builder page).
 export function createRenderer({ container, game, world, plain = false }) {
   const warned = new Set();
   const safe = (tag, fn) => {

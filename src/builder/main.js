@@ -1,4 +1,4 @@
-// Train Track Builder: the map and the trains with nothing else. No gold, no Wikipedia, no
+// Rail Builder: the map and the trains with nothing else. No gold, no Wikipedia, no
 // names, no end. Click the ground to build a station there; the track and its train come with it.
 import './free.js'; // must be first: makes everything free before the rules load
 import { createWorld } from '../world/index.js';
@@ -128,7 +128,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 // Handy for poking at it from the browser console.
-window.ttb = { wiki, world, game, renderer };
+window.railbuilder = { wiki, world, game, renderer };
 
 game.start().catch((err) => {
   console.error(err);

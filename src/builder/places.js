@@ -1,4 +1,4 @@
-// The places in Train Track Builder. They stand where Wikipedia stands in the game (the WikiApi
+// The places in Rail Builder. They stand where Wikipedia stands in the game (the WikiApi
 // contract in src/types.js), so the same rules and map can run on them. There are no words and
 // no network laid out in advance: a place exists once you click the ground to build there, and
 // it links only to the stations you join it to.

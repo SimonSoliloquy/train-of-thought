@@ -16,8 +16,6 @@ const hint = document.getElementById('hint');
 
 /** Track from the selected station only reaches this far (hexes); beyond, the nearest station builds. */
 const REACH = 14;
-/** A click may be moved this far (hexes) to find dry, level ground; farther and nothing is built. */
-const NUDGE = 3;
 
 let selected = null;
 let busy = false;
@@ -59,7 +57,7 @@ function sourceFor(h) {
   return best;
 }
 
-/** A new station on the ground at world point (x, z). */
+/** A new station on the ground at world point (x, z), or on the nearest dry, level hex to it. */
 async function buildAt(x, z) {
   const h = worldToHex(x, z);
   if (!world.isRevealed(h.q, h.r)) return;
@@ -71,13 +69,13 @@ async function buildAt(x, z) {
   const { placement } = world.placeAt(from, title, x, z);
   let ok = false;
   try {
-    if (placement && hexDistance(placement, h) <= NUDGE) ok = await lay(from, title);
+    if (placement) ok = await lay(from, title);
   } finally {
     if (!ok) {
       world.dropGhost(title);
       wiki.forget(title);
       game.state.stubs.delete(title);
-      say('Nowhere to build just there: try drier, flatter ground.');
+      say('No track could reach there. Try another spot.');
     }
   }
 }

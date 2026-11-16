@@ -771,3 +771,21 @@ test('performance: terrainAt and findRoutes', (t) => {
   t.diagnostic(`findRoutes on a fresh world (${hexDistance(far, { q: 0, r: 0 })} hexes, cold terrain): ${(performance.now() - s).toFixed(2)} ms`);
   assert.ok(avg < 60, `findRoutes too slow: ${avg} ms`);
 });
+
+test('placeAt: an unbuilt spot goes to the nearest acceptable hex, stays put, and can be dropped', () => {
+  const w = createWorld({ seed: 11 });
+  w.placeStart('A');
+  const target = hexToWorld(5, 0);
+  const { placement: p } = w.placeAt('A', 'B', target.x, target.z);
+  assert.ok(p && p.state === 'ghost');
+  assert.ok(hexDistance(p, { q: 5, r: 0 }) <= 3, 'lands close to the point asked for');
+  assert.ok(hexDistance(p, { q: 0, r: 0 }) >= WORLD.minStationSpacing);
+  const at = { q: p.q, r: p.r };
+  w.noteLinks('A', ['B']);
+  w.placeGhosts('A', ['B', 'C']); // would re-site an ordinary reservation
+  assert.deepEqual({ q: w.placements.get('B').q, r: w.placements.get('B').r }, at);
+  assert.equal(w.placeAt('A', 'B', 0, 0).placement, null);
+  assert.ok(w.dropGhost('B'));
+  assert.ok(!w.placements.has('B'));
+  assert.equal(w.dropGhost('A'), false, 'a built station is never dropped');
+});

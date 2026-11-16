@@ -114,6 +114,13 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     return linkSets.get(title) || new Set();
   }
 
+  /** Makes built stations a and/or b link to each other, so track may join them (sandbox use). */
+  function link(a, b) {
+    if (a === b) return;
+    linkSets.get(a)?.add(b);
+    linkSets.get(b)?.add(a);
+  }
+
   async function loadArticle(title) {
     const st = state.stations.get(title);
     if (st) return st.article;
@@ -1174,6 +1181,7 @@ export function createGame({ wiki, world, seed = 1, spawnThoughts = true, autoTr
     setSpeed,
     quoteBuild,
     build,
+    link,
     survey,
     quoteUpgrade,
     upgradeTrack,

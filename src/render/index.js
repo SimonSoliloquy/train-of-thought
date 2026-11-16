@@ -415,7 +415,29 @@ export function createRenderer({ container, game, world, plain = false }) {
       if (best !== before) cardPick = best;
     }
     if (cardPick && (!best || best.kind === 'station' || best.kind === 'ghost' || best.kind === 'article')) return cardPick;
-    return best || { kind: 'none' };
+    if (best) return best;
+    // plain (the builder): a click on bare ground says where on the ground it landed
+    if (plain) {
+      const g = groundHit(ray);
+      if (g) return { kind: 'ground', x: g.x, z: g.z };
+    }
+    return { kind: 'none' };
+  }
+
+  /** Where a ray first meets the ground: march along it, then narrow down the crossing. */
+  function groundHit(ray) {
+    const o = ray.origin, d = ray.direction;
+    const above = (t) => o.y + d.y * t - (safe('ground', () => terrain.groundAt(o.x + d.x * t, o.z + d.z * t)) ?? 0);
+    const step = 0.25, far = 400;
+    let t0 = 0;
+    if (above(0) <= 0) return null;
+    for (let t = step; t <= far; t += step) {
+      if (above(t) > 0) { t0 = t; continue; }
+      let lo = t0, hi = t;
+      for (let i = 0; i < 16; i++) { const m = (lo + hi) / 2; if (above(m) > 0) lo = m; else hi = m; }
+      return { x: o.x + d.x * hi, z: o.z + d.z * hi };
+    }
+    return null;
   }
 
   const onPointerDown = (e) => {

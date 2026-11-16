@@ -90,6 +90,16 @@ export function createWorld({ seed } = {}) {
       layout.noteLinks(title, links);
     },
 
+    /** An unbuilt spot at the acceptable hex nearest world point (x, z); it never moves. */
+    placeAt(parentTitle, title, x, z) {
+      return { placement: layout.placeAt(parentTitle, title, x, z), revealed: [] };
+    },
+
+    /** Removes an unbuilt spot again. */
+    dropGhost(title) {
+      return layout.drop(title);
+    },
+
     setBuilt(title) {
       const p = layout.setBuilt(title);
       return { revealed: reveal(p.q, p.r, WORLD.revealStation, []) };

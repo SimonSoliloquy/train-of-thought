@@ -137,6 +137,7 @@ export function createLayout(terrain, isTrack = () => false) {
 
   /** Puts reservation p (already in `placements`) on its best hex given everything known now. */
   function site(p) {
+    if (p.pinned) return; // put down at a chosen point (placeAt): it stays there
     const parent = placements.get(p.parent);
     const s = slot.get(p.title) || { index: 0, n: 1 };
     const t = baseTarget(p.title, parent, s.index, s.n);
@@ -209,6 +210,31 @@ export function createLayout(terrain, isTrack = () => false) {
     return out;
   }
 
+  /**
+   * An unbuilt spot for `title` on the acceptable hex closest to world point (x, z), linked from
+   * `parentTitle`. Unlike placeGhosts it never moves afterwards. Returns null if already placed.
+   */
+  function placeAt(parentTitle, title, x, z) {
+    const parent = placements.get(parentTitle);
+    if (!parent) throw new Error(`world.placeAt: "${parentTitle}" is not on the map`);
+    if (placements.has(title)) return null;
+    const h = findSpot(x, z, title, []);
+    const p = { title, q: h.q, r: h.r, state: 'ghost', parent: parentTitle, pinned: true };
+    placements.set(title, p);
+    occupy(p);
+    return p;
+  }
+
+  /** Takes an unbuilt spot off the map again (a build that could not go ahead). */
+  function drop(title) {
+    const p = placements.get(title);
+    if (!p || p.state !== 'ghost') return false;
+    vacate(p);
+    placements.delete(title);
+    slot.delete(title);
+    return true;
+  }
+
   function setBuilt(title) {
     const p = placements.get(title);
     if (!p) throw new Error(`world.setBuilt: "${title}" is not on the map`);
@@ -243,5 +269,5 @@ export function createLayout(terrain, isTrack = () => false) {
     return t !== undefined && placements.get(t).state === 'built' ? t : null;
   }
 
-  return { placements, placeStart, placeGhosts, setBuilt, noteLinks, clearHexes, stationAt, builtAt };
+  return { placements, placeStart, placeGhosts, placeAt, drop, setBuilt, noteLinks, clearHexes, stationAt, builtAt };
 }

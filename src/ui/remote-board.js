@@ -2,6 +2,9 @@
 // (shared with other games; this game only ever calls its /train-of-thought/ routes). No keys,
 // no account: a run carries a random player id kept in this browser and an optional name.
 // Every call times out and resolves to null on any failure, so the game never waits on it.
+// Free-tier budget: at most one GET of the list per page load (kept in memory, shared by every
+// caller) and one POST per saved run, whose answer carries the updated list, so nothing re-reads it.
+// The POST goes as text/plain (no Content-Type header) so the browser sends no CORS preflight.
 
 export const LEADERBOARD_URL = 'https://leaderboards.ai-wizards.workers.dev';
 const GAME_PATH = '/train-of-thought';
@@ -129,28 +132,47 @@ async function request(url, init, { fetch: f = globalThis.fetch, timeout = TIMEO
 }
 
 const rank = (x) => (Number.isFinite(x) && x >= 1 ? Math.round(x) : null);
+const listLength = (n) => Math.max(1, Math.min(50, int(n || TOP_N)));
+
+/** The all-time list as the server last gave it to this page; filled once, by GET or by a submit. */
+let topCache = null; // { key, rows: Promise<object[]|null> }
+
+/** Forget the list kept in memory (tests only: a page load starts with nothing kept). */
+export function forgetTop() {
+  topCache = null;
+}
+
+/** A shared list as sent, made safe to draw; null when it is not a list. */
+function cleanTop(out, n) {
+  if (!Array.isArray(out)) return null;
+  return out.map(cleanTopRow).filter(Boolean).slice(0, n);
+}
 
 /**
- * Sends a finished run, once, in the background.
+ * Sends a finished run, once, in the background. The answer carries the updated all-time list,
+ * which replaces the one kept in memory.
  * @param {object} run  the gameOver payload
  * @param {{base?: string, fetch?: Function, hostname?: string, storage?: Storage|null, name?: string,
- *   timeout?: number, keepalive?: boolean}} [opts]
- * @returns {Promise<{rankAllTime: number|null, rankDaily: number|null, totalPlayers: number|null}|null>}
+ *   n?: number, timeout?: number, keepalive?: boolean}} [opts]
+ * @returns {Promise<{rankAllTime: number|null, totalPlayers: number|null, top: object[]|null}|null>}
  *   null when the shared board is off, on this machine (localhost), or on any failure.
  */
 export async function submitRun(run, opts = {}) {
   const base = opts.base === undefined ? LEADERBOARD_URL : opts.base;
   const hostname = opts.hostname === undefined ? globalThis.location && globalThis.location.hostname : opts.hostname;
   if (!sharedBoardOn(base) || isLocalHost(hostname)) return null;
+  const n = listLength(opts.n);
   const body = submitBody(run, playerId(opts.storage), opts.name);
-  const out = await request(`${base}${GAME_PATH}/submit`, {
+  // no headers: a text/plain body is a "simple" request, so no preflight; the Worker parses it as JSON
+  const out = await request(`${base}${GAME_PATH}/submit?n=${n}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     keepalive: !!opts.keepalive,
   }, opts);
   if (!out || typeof out !== 'object' || Array.isArray(out)) return null;
-  return { rankAllTime: rank(out.rankAllTime), rankDaily: rank(out.rankDaily), totalPlayers: rank(out.totalPlayers) };
+  const top = cleanTop(out.top, n);
+  if (top) topCache = { key: `${base}|${n}`, rows: Promise.resolve(top) };
+  return { rankAllTime: rank(out.rankAllTime), totalPlayers: rank(out.totalPlayers), top };
 }
 
 /** One row of a shared board, made safe to draw. */
@@ -172,16 +194,19 @@ export function cleanTopRow(r) {
 }
 
 /**
- * The best runs everywhere, today (UTC, as the server counts days) or of all time.
- * @param {'daily'|'alltime'} scope
+ * The best runs of all time, from everyone. Asked for at most once per page load: later calls
+ * (and calls while the first is on its way) get the same answer, or the list a submit brought back.
+ * A failed read is kept too, so it is not retried; the local board stays on screen instead.
  * @param {{base?: string, fetch?: Function, n?: number, timeout?: number}} [opts]
  * @returns {Promise<object[]|null>} rows best first, or null when the board is off or cannot be read
  */
-export async function fetchTop(scope, opts = {}) {
+export async function fetchTop(opts = {}) {
   const base = opts.base === undefined ? LEADERBOARD_URL : opts.base;
-  if (!sharedBoardOn(base) || (scope !== 'daily' && scope !== 'alltime')) return null;
-  const n = Math.max(1, Math.min(50, int(opts.n || TOP_N)));
-  const out = await request(`${base}${GAME_PATH}/top?scope=${scope}&n=${n}`, { method: 'GET' }, opts);
-  if (!Array.isArray(out)) return null;
-  return out.map(cleanTopRow).filter(Boolean).slice(0, n);
+  if (!sharedBoardOn(base)) return null;
+  const n = listLength(opts.n);
+  const key = `${base}|${n}`;
+  if (!topCache || topCache.key !== key) {
+    topCache = { key, rows: request(`${base}${GAME_PATH}/top?n=${n}`, { method: 'GET' }, opts).then((out) => cleanTop(out, n)) };
+  }
+  return topCache.rows;
 }

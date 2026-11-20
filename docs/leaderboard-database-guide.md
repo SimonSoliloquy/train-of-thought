@@ -1,7 +1,8 @@
 # Guide: adding a database-backed leaderboard to Train of Thought
 
 For the agent adding shared leaderboard storage. Written 2026-11-15, against commit `0c6829f`;
-updated the same day to describe what was built (Cloudflare Worker, names, daily boards, longest line).
+updated the same day to describe what was built (Cloudflare Worker, names, daily boards, longest line),
+and on 2026-11-19 when the "today" board was dropped and the game moved to simonsoliloquy.com.
 
 ## What you are building
 
@@ -34,7 +35,9 @@ The questions this guide first asked Simon are answered:
    routes, never another game's (e.g. Linkshot). There are no `/api` handlers in this repo.
 2. **Names:** optional. One small text field on the game-over screen, no button. Blank = "Anonymous".
    Max 20 characters, remembered in `localStorage` (`tot.name`). The server filters names too.
-3. **Boards:** today (UTC, decided by the server) and all time.
+3. **Boards:** all time only. A "today" board (UTC) was built first; Simon dropped it on 2026-11-19 to
+   stay inside the Worker's free-tier limits (it doubled the reads). `GET /top?scope=daily` now just
+   returns the all-time list; the client does not ask for it.
 4. **Longest train line:** every run names its longest line, "A → B", shown on every board row. It does
    not change the score.
 
@@ -42,10 +45,10 @@ The questions this guide first asked Simon are answered:
 
 | What | Where |
 |---|---|
-| Stack | Vite + three.js, plain JS ES modules, no framework, no backend in this repo. `npm run dev` (port 5183), `npm test` (197 passing), `npm run build` |
-| Hosting | Vercel project `train-of-thought`, live at https://wiki-train-of-thought.vercel.app. Repo: private, `SimonSoliloquy/train-of-thought`, branch `main`. A push to `main` deploys |
+| Stack | Vite + three.js, plain JS ES modules, no framework, no backend in this repo. `npm run dev` (port 5183), `npm test` (200 passing), `npm run build` |
+| Hosting | Cloudflare (static assets, `wrangler.jsonc`, built by `tools/cf-build.sh`), live at https://simonsoliloquy.com/train-of-thought/. Repo: private, `SimonSoliloquy/train-of-thought`, branch `main`. A push to `main` deploys. The old https://wiki-train-of-thought.vercel.app only redirects there (`vercel.json`) until about 2026-12-19 |
 | Local board | `src/ui/board.js`: `loadRuns`, `saveRun(storage, run)` returns `{runs, rank, best}`, `cleanRun` (now keeps `lineFrom`/`lineTo`), `sortRuns`. Key `tot.runs`, top 10. Tests in `src/ui/board.test.js` |
-| Shared board client | `src/ui/remote-board.js`: `LEADERBOARD_URL`, `submitRun(run, opts)`, `fetchTop(scope, opts)`, `sharedBoardOn`, `isLocalHost`, `cleanName`/`loadName`/`saveName`, `playerId`. Tests (fake `fetch`) in `src/ui/remote-board.test.js` |
+| Shared board client | `src/ui/remote-board.js`: `LEADERBOARD_URL`, `submitRun(run, opts)`, `fetchTop(opts)` (memory-cached, `forgetTop` for tests), `sharedBoardOn`, `isLocalHost`, `cleanName`/`loadName`/`saveName`, `playerId`. Tests (fake `fetch`) in `src/ui/remote-board.test.js` |
 | Longest line | `src/sim/line.js`: `longestLine(tracks)`. Tests in `src/sim/line.test.js` |
 | Game-over screen | `src/ui/screens.js`: `onGameOver(payload)` calls `saveRun` once and draws at once, then reads the shared boards and sends the run in the background |
 | Event wiring | `src/ui/index.js` passes the sim's `gameOver` event to `screens.onGameOver` |
@@ -75,13 +78,18 @@ the order they first appear on a track). It is computed once, at game over.
 
 ### The Worker's API (as called)
 
-- `POST {url}/train-of-thought/submit`, JSON
+- `POST {url}/train-of-thought/submit?n=10`, JSON body sent **without** a `Content-Type` header
+  (so it goes as `text/plain` and the browser sends no CORS preflight; the Worker parses JSON anyway)
   `{player, name, score, time, stations, tickets, delivered, start, lineFrom, lineTo}` →
-  `{rankAllTime, rankDaily, totalPlayers}`. `player` is a random id kept in `localStorage`
+  `{rankAllTime, rankDaily: null, totalPlayers, top, daily: null}`, where `top` is the updated
+  all-time list (same rows as `GET /top`, `n` long). `player` is a random id kept in `localStorage`
   (`tot.player`); `name` is `''` when blank; `time` is sent as whole seconds.
-- `GET {url}/train-of-thought/top?scope=daily|alltime&n=10` →
-  `[{name, score, stations, tickets, delivered, time, start, lineFrom, lineTo, at}]`. `name` is null
-  for unnamed or filtered runs; the client shows "Anonymous".
+- `GET {url}/train-of-thought/top?n=10` → the all-time list
+  `[{name, score, stations, tickets, delivered, time, start, lineFrom, lineTo, at}]` (the browser
+  caches it 30 s). `name` is null for unnamed or filtered runs; the client shows "Anonymous".
+- Request budget: at most **one GET per page load** (the list is kept in memory and shared by every
+  caller; a failed read is not retried) and **one POST per saved run**, whose `top` replaces the list
+  so nothing is re-read. Each "New run" reloads the page.
 - Both time out after 5 s and resolve to `null` on any failure (non-2xx, bad JSON, wrong shape,
   thrown fetch). While `LEADERBOARD_URL` contains `WORKER_SUBDOMAIN` the client makes no call at all.
 - Server rules (from the Worker's author): 400 if `score` is outside `[base, base + 150 × stations]`
@@ -92,14 +100,14 @@ the order they first appear on a track). It is computed once, at game over.
 ### The game-over screen
 
 1. `saveRun` runs exactly as before and the local board ("Best runs on this machine") is drawn at once.
-2. Both shared boards are fetched in the background. When either has a run, "Best runs today" and
-   "Best runs of all time" take the local board's place; if both fail (or are empty) the local board stays.
+2. The all-time list is fetched once in the background. When it has a run, "Best runs of all time"
+   takes the local board's place; if it fails (or is empty) the local board stays.
    No error is ever shown for the network.
 3. The run is sent **once**, when the player presses Enter in the name field or leaves it, presses
    "New run" (sent with `keepalive`), closes the page (`pagehide`), or 30 s after game over if the field
    is untouched (not while it has focus). The field then locks for this run; the name is remembered for
-   the next. After the answer, both boards are read again, this run's row is picked out by its rank, and
-   a line under them says e.g. "This run: 4th today · 37th of all time · 120 players."
+   the next. The answer's `top` list is drawn (no second read), this run's row is picked out by its
+   rank, and a line under it says e.g. "This run: 37th of all time · 120 players."
 4. Never sent from `localhost`, `127.x`, `[::1]` or `*.localhost` (`isLocalHost`), so testing never
    pollutes the board. Reading the boards does work from a local dev tab.
 5. Rows: `#, Score, Stations, Tickets, Time`, then a two-line cell: the player's name (shared) or the

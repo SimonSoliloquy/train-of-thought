@@ -35,8 +35,8 @@ export function createScreens(ctx) {
   let shownKey = '';
   let board = null; // { runs, rank, best } once this run is on the board
   const sharedOn = sharedBoardOn();
-  let shared = null; // { daily, alltime, ranks } once a shared board has been read
-  let sharedAsked = 0, sharedDrawn = 0; // so a slow first read never covers the read made after sending
+  let shared = null; // { alltime, ranks, fresh } once the shared board has been read
+  let sharedFinal = false; // the submit's answer brought the list: a slow first read must not cover it
   let submitted = false; // this run has gone to the shared board (or was meant to: once only)
   let submitTimer = 0;
   let boardsEl = null;
@@ -109,7 +109,7 @@ export function createScreens(ctx) {
   }
 
   /**
-   * The one optional field: the name this run goes on the shared boards under. It sends the run
+   * The one optional field: the name this run goes on the shared board under. It sends the run
    * when the player presses Enter or leaves the field, or soon after game over if they never
    * touch it; no button. Remembered for the next run.
    */
@@ -128,16 +128,22 @@ export function createScreens(ctx) {
     return h('label', { class: 'tot-name' }, h('span', { class: 'tot-k', text: 'Your name on the board' }), nameInput);
   }
 
-  // ---------------------------------------------------------------- the shared boards
+  // ---------------------------------------------------------------- the shared board
 
-  /** Fetch both shared boards; draw them when they come, keep the local board when they do not. */
-  async function loadShared(ranks) {
-    const mine = ++sharedAsked;
-    const [daily, alltime] = await Promise.all([fetchTop('daily'), fetchTop('alltime')]);
-    if (mine < sharedDrawn) return; // a later read (after this run was sent) already answered
-    if (daily === null && alltime === null && shared) return; // a failed refresh keeps what is shown
-    sharedDrawn = mine;
-    shared = { daily, alltime, ranks: ranks || (shared && shared.ranks) || null };
+  /** Read the shared board (once per page load); draw it when it comes, keep the local board when not. */
+  async function loadShared() {
+    const alltime = await fetchTop();
+    if (sharedFinal || alltime === null) return; // the submit already answered, or no answer: keep what is shown
+    shared = { alltime, ranks: null, fresh: false };
+    drawBoards();
+  }
+
+  /** The submit's answer: its ranks, and the updated list it carries (no second read). */
+  function showSubmitted(ans) {
+    if (!ans) return; // failed: whatever is shown stays
+    sharedFinal = true;
+    // without a list in the answer the one shown stays, but this run's row is not picked out in it
+    shared = { alltime: ans.top || (shared && shared.alltime) || null, ranks: ans, fresh: !!ans.top };
     drawBoards();
   }
 
@@ -151,9 +157,7 @@ export function createScreens(ctx) {
       nameInput.value = name;
       nameInput.disabled = true;
     }
-    submitRun(over, { storage: storage(), name, keepalive }).then((ranks) => {
-      if (ranks) loadShared(ranks);
-    });
+    submitRun(over, { storage: storage(), name, keepalive }).then(showSubmitted);
   }
 
   /** Never touched: send it after a short read of the screen, but not while the name is being typed. */
@@ -174,17 +178,15 @@ export function createScreens(ctx) {
     if (!boardsEl) return;
     clear(boardsEl);
     const s = shared;
-    // the shared boards take the local board's place once they have a run to show
-    const any = s && ((s.daily && s.daily.length) || (s.alltime && s.alltime.length));
+    // the shared board takes the local board's place once it has a run to show
+    const any = s && s.alltime && s.alltime.length;
     if (!any) {
       boardsEl.append(...[localBoard()].filter(Boolean));
       return;
     }
     const r = s.ranks;
-    if (s.daily) boardsEl.append(table('Best runs today', s.daily, r && r.rankDaily, true, 'No runs yet today.'));
-    if (s.alltime) boardsEl.append(table('Best runs of all time', s.alltime, r && r.rankAllTime, true, 'No runs yet.'));
+    boardsEl.append(table('Best runs of all time', s.alltime, s.fresh && r && r.rankAllTime, true, 'No runs yet.'));
     const bits = [];
-    if (r && r.rankDaily) bits.push(`${fmtOrdinal(r.rankDaily)} today`);
     if (r && r.rankAllTime) bits.push(`${fmtOrdinal(r.rankAllTime)} of all time`);
     if (r && r.totalPlayers) bits.push(`${fmtInt(r.totalPlayers)} ${r.totalPlayers === 1 ? 'player' : 'players'}`);
     if (board && board.best) bits.push('a new best on this machine');
@@ -243,7 +245,7 @@ export function createScreens(ctx) {
     if (first) board = saveRun(storage(), over); // once per run, and drawn at once
     render(true);
     if (first && sharedOn) {
-      loadShared(null); // in the background: the screen above never waits for it
+      loadShared(); // in the background: the screen above never waits for it
       submitSoon();
       window.addEventListener('pagehide', () => submitNow(true)); // closing the tab still sends it
     }

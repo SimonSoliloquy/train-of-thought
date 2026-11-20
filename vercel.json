@@ -1,0 +1,8 @@
+{
+  "redirects": [
+    { "source": "/(.*)", "destination": "https://simonsoliloquy.com/train-of-thought/$1", "permanent": false }
+  ],
+  "buildCommand": "",
+  "installCommand": "",
+  "outputDirectory": "."
+}

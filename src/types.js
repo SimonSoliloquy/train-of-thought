@@ -443,12 +443,16 @@
 /**
  * BOARDS. The game-over screen shows the best runs at once from this browser (src/ui/board.js,
  * localStorage key 'tot.runs', top 10) and then, when the shared Worker answers, the best runs of
- * everyone today (UTC, the server's day) and of all time (src/ui/remote-board.js). Without an answer
- * the local board stays: the screen never waits on the network and never shows an error for it.
+ * everyone of all time (src/ui/remote-board.js; there is no "today" board since 2026-11-19, to stay
+ * inside the Worker's free tier). Without an answer the local board stays: the screen never waits on
+ * the network and never shows an error for it. Requests: at most one GET per page load (the list is
+ * kept in memory) and one POST per saved run, whose answer carries the updated list.
  * Shared Worker: LEADERBOARD_URL in remote-board.js; public, no keys; this game only calls its
  * /train-of-thought/ routes. While the address holds the placeholder WORKER_SUBDOMAIN nothing is fetched.
- *   POST {url}/train-of-thought/submit  SubmittedRun -> SubmitAnswer   (never from localhost / 127.x / [::1])
- *   GET  {url}/train-of-thought/top?scope=daily|alltime&n=10 -> SharedRun[]
+ *   POST {url}/train-of-thought/submit?n=10  SubmittedRun as text/plain JSON (no preflight)
+ *        -> {rankAllTime, rankDaily: null, totalPlayers, top: SharedRun[], daily: null}
+ *        read as SubmitAnswer   (never from localhost / 127.x / [::1])
+ *   GET  {url}/train-of-thought/top?n=10 -> SharedRun[]   (all time; the browser caches it 30 s)
  * localStorage: 'tot.player' a random id for this browser; 'tot.name' the name last typed (optional).
  *
  * @typedef {Object} SubmittedRun
@@ -465,8 +469,8 @@
  *
  * @typedef {Object} SubmitAnswer   every field null when the server sent something else
  * @property {number|null} rankAllTime   1 = best
- * @property {number|null} rankDaily
  * @property {number|null} totalPlayers
+ * @property {SharedRun[]|null} top      the all-time list after this run, best first
  *
  * @typedef {Object} SharedRun   as drawn: a null or filtered name reads 'Anonymous'
  * @property {string} name

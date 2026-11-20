@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node --test \"src/**/*.test.js\"",
     "dev": "vite --port 5183 --strictPort",
-    "build": "vite build"
+    "build": "vite build --base=/train-of-thought/"
   },
   "keywords": [],
   "author": "",

@@ -2,8 +2,10 @@
 
 A real-time train tycoon game in three.js where Wikipedia articles are stations. Track can only follow a
 real link between two articles, and the passengers are thoughts on the platform, each heading for
-another article. Build a station and the article's title, photo and text pop up; carry thoughts to earn
-fares, and a growing reputation brings bigger fares and crowds. Single player, random start.
+another article. A passenger's ticket names an article you can't see from the map: open your station's
+real Wikipedia article, find the link that leads towards it and build there. Finding the chain is the
+game. Gold arrives every 10 seconds (stations earn for the links on their pages, track and trains cost
+upkeep), and a growing reputation brings bigger fares and crowds. Single player, random start.
 
 **Play:** https://simonsoliloquy.com/train-of-thought/ (the old https://wiki-train-of-thought.vercel.app
 forwards there until about 2026-12-19). [Rail Builder](https://github.com/SimonSoliloquy/railbuilder)
